@@ -348,6 +348,36 @@ CREATE TABLE IF NOT EXISTS nordle_games (
     PRIMARY KEY (user_id, date),
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+-- 배지 (닭대가리 등)
+CREATE TABLE IF NOT EXISTS user_badges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_user_id INTEGER NOT NULL,
+    sender_user_id INTEGER NOT NULL,
+    badge_type TEXT NOT NULL DEFAULT 'chicken',
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (target_user_id) REFERENCES users(id),
+    FOREIGN KEY (sender_user_id) REFERENCES users(id)
+);
+
+-- 전광판 (시스템 알림 티커)
+CREATE TABLE IF NOT EXISTS ticker_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general',
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- 채팅 메시지
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    message TEXT NOT NULL,
+    msg_type TEXT NOT NULL DEFAULT 'user' CHECK(msg_type IN ('user','system')),
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
 

@@ -82,6 +82,32 @@ async def log_point_change(db, user_id: int, amount: int, source: str, descripti
     return balance_after
 
 
+async def get_user_badge_str(db, user_id: int) -> str:
+    """유저의 현재 배지 문자열 생성 (왕관 + 닭)"""
+    # 포인트 1위 체크
+    leader = await db.execute_fetchall(
+        """SELECT pb.user_id FROM point_balances pb
+           JOIN users u ON pb.user_id = u.id
+           WHERE u.is_approved = 1 AND u.is_admin = 0
+           ORDER BY pb.points DESC LIMIT 1"""
+    )
+    is_leader = leader and leader[0]["user_id"] == user_id
+
+    # 유효한 닭 수
+    chickens = await db.execute_fetchall(
+        "SELECT COUNT(*) as cnt FROM user_badges WHERE target_user_id = ? AND badge_type = 'chicken' AND expires_at > datetime('now','localtime')",
+        (user_id,),
+    )
+    chicken_count = chickens[0]["cnt"] if chickens else 0
+
+    badge = ""
+    if is_leader:
+        badge += "👑"
+    if chicken_count > 0:
+        badge += "🐔" * chicken_count
+    return badge
+
+
 # ═══════════════════════════════════════════════
 # AUTH API
 # ═══════════════════════════════════════════════
@@ -430,9 +456,11 @@ async def _calculate_monthly_rankings(db, month: str) -> list:
         total = cash + total_eval
         rate = ((total / INITIAL_SEED) - 1) * 100
 
+        badge = await get_user_badge_str(db, uid)
         rankings.append({
             "user_id": uid,
             "nickname": u["nickname"],
+            "badge": badge,
             "total_value": round(total),
             "return_rate": round(rate, 2),
             "cash": round(cash),
@@ -479,9 +507,11 @@ async def get_cumulative_rankings(user=Depends(get_current_user)):
             worst = min((s["return_rate"] for s in snapshots), default=0)
             wins = sum(1 for s in snapshots if s["return_rate"] > 0)
 
+            badge = await get_user_badge_str(db, u["id"])
             rankings.append({
                 "user_id": u["id"],
                 "nickname": u["nickname"],
+                "badge": badge,
                 "months_played": months_played,
                 "avg_return": round(avg_return, 2),
                 "best_return": round(best, 2),
@@ -777,6 +807,14 @@ async def admin_input_prices(req: PriceInputRequest, user=Depends(get_admin_user
                 "INSERT OR REPLACE INTO daily_snapshots (user_id, date, total_value, cash, return_rate, month) VALUES (?, ?, ?, ?, ?, ?)",
                 (uid, date, total, cash, round(rate, 2), month)
             )
+
+        # 전광판: 매매 체결 알림
+        if settled_count > 0:
+            await insert_ticker(db, f"📊 {date} 매매가 체결되었습니다 ({settled_count}건)", "trade")
+        # 전광판: 평가금 1위 변동 체크
+        await check_eval_leader_change(db, month)
+        # 전광판: 포인트 1위 변동 체크
+        await check_point_leader_change(db)
 
         await db.commit()
         return {
@@ -1615,10 +1653,12 @@ async def point_leaderboard(user=Depends(get_current_user)):
         )
         rankings = []
         for i, r in enumerate(rows):
+            badge = await get_user_badge_str(db, r["user_id"])
             rankings.append({
                 "rank": i + 1,
                 "user_id": r["user_id"],
                 "nickname": r["nickname"],
+                "badge": badge,
                 "points": r["points"],
             })
         return {"rankings": rankings}
@@ -1671,6 +1711,16 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
                VALUES (?, ?, ?, ?, ?, ?)""",
             (user["user_id"], req.choice, computer, result, req.wager, payout)
         )
+
+        # 채팅 시스템 메시지 (주목할 만한 이벤트)
+        nick_row = await db.execute_fetchall(
+            "SELECT nickname FROM users WHERE id = ?", (user["user_id"],)
+        )
+        nickname = nick_row[0]["nickname"] if nick_row else "???"
+        await check_rps_notable_event(db, user["user_id"], nickname, result, req.wager, payout)
+        if abs(payout) >= 300:
+            await check_point_leader_change(db)
+
         await db.commit()
 
         new_bal = await db.execute_fetchall(
@@ -1697,6 +1747,434 @@ async def rps_history(user=Depends(get_current_user)):
             (user["user_id"],)
         )
         return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# CHAT (채팅)
+# ═══════════════════════════════════════════════
+
+async def insert_system_message(db, message: str):
+    await db.execute(
+        "INSERT INTO chat_messages (user_id, message, msg_type) VALUES (NULL, ?, 'system')",
+        (message,),
+    )
+    await db.execute(
+        "DELETE FROM chat_messages WHERE id NOT IN "
+        "(SELECT id FROM chat_messages ORDER BY id DESC LIMIT 500)"
+    )
+
+
+async def check_rps_notable_event(db, user_id: int, nickname: str, result: str, wager: int, payout: int):
+    messages = []
+
+    # 큰 판 승리/패배
+    if result == "win" and wager >= 500:
+        messages.append(f"{nickname}님이 가위바위보에서 {wager:,}P를 걸어 승리! (+{payout:,}P)")
+    elif result == "lose" and wager >= 500:
+        messages.append(f"{nickname}님이 가위바위보에서 {wager:,}P를 잃었습니다...")
+
+    # 연승/연패 감지
+    recent = await db.execute_fetchall(
+        "SELECT result FROM rps_games WHERE user_id = ? ORDER BY id DESC LIMIT 20",
+        (user_id,),
+    )
+    results = [r["result"] for r in recent]
+
+    if len(results) >= 3:
+        current = results[0]
+        streak = 0
+        for r in results:
+            if r == current:
+                streak += 1
+            else:
+                break
+
+        if current == "win" and streak >= 3:
+            messages.append(f"{nickname}님 가위바위보 {streak}연승 중!")
+        elif current == "lose" and streak >= 3:
+            messages.append(f"{nickname}님 가위바위보 {streak}연패 중...")
+        elif current == "draw" and streak >= 4:
+            messages.append(f"{nickname}님 가위바위보 {streak}연속 무승부?!")
+
+    # 최근 5분간 대량 손실
+    five_min_ago = (dt.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    recent_losses = await db.execute_fetchall(
+        "SELECT SUM(ABS(payout)) as total_lost, COUNT(*) as cnt "
+        "FROM rps_games WHERE user_id = ? AND result = 'lose' AND created_at >= ?",
+        (user_id, five_min_ago),
+    )
+    if recent_losses and recent_losses[0]["total_lost"]:
+        total_lost = recent_losses[0]["total_lost"]
+        cnt = recent_losses[0]["cnt"]
+        if total_lost >= 2000 and cnt >= 3:
+            messages.append(f"{nickname}님이 최근 5분간 {total_lost:,}P를 잃었습니다 ({cnt}판)")
+
+    if messages:
+        await insert_system_message(db, messages[0])
+
+
+@app.get("/api/chat/messages")
+async def get_chat_messages(after_id: int = 0, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT c.id, c.user_id, u.nickname, c.message, c.msg_type, c.created_at
+               FROM chat_messages c
+               LEFT JOIN users u ON c.user_id = u.id
+               WHERE c.id > ?
+               ORDER BY c.id ASC
+               LIMIT 100""",
+            (after_id,),
+        )
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d["user_id"]:
+                d["badge"] = await get_user_badge_str(db, d["user_id"])
+            else:
+                d["badge"] = ""
+            result.append(d)
+        return result
+    finally:
+        await db.close()
+
+
+@app.post("/api/chat/send")
+async def send_chat_message(req: ChatSendRequest, user=Depends(get_current_user)):
+    msg = req.message.strip()
+    if not msg or len(msg) > 200:
+        raise HTTPException(400, "메시지는 1~200자여야 합니다")
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "INSERT INTO chat_messages (user_id, message, msg_type) VALUES (?, ?, 'user')",
+            (user["user_id"], msg),
+        )
+        msg_id = cursor.lastrowid
+        await db.execute(
+            "DELETE FROM chat_messages WHERE id NOT IN "
+            "(SELECT id FROM chat_messages ORDER BY id DESC LIMIT 500)"
+        )
+        await db.commit()
+        return {"id": msg_id, "message": msg}
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# TICKER (전광판)
+# ═══════════════════════════════════════════════
+
+async def insert_ticker(db, message: str, category: str = "general"):
+    await db.execute(
+        "INSERT INTO ticker_messages (message, category) VALUES (?, ?)",
+        (message, category),
+    )
+    await db.execute(
+        "DELETE FROM ticker_messages WHERE id NOT IN "
+        "(SELECT id FROM ticker_messages ORDER BY id DESC LIMIT 200)"
+    )
+
+
+async def check_point_leader_change(db):
+    """포인트 1위 변동 감지 → 전광판"""
+    rows = await db.execute_fetchall(
+        """SELECT pb.user_id, u.nickname, pb.points
+           FROM point_balances pb JOIN users u ON pb.user_id = u.id
+           WHERE u.is_approved = 1 AND u.is_admin = 0
+           ORDER BY pb.points DESC LIMIT 1"""
+    )
+    if not rows:
+        return
+    leader = rows[0]
+    # 최근 전광판에서 포인트 1위 메시지 확인
+    recent = await db.execute_fetchall(
+        "SELECT message FROM ticker_messages WHERE category = 'point_leader' ORDER BY id DESC LIMIT 1"
+    )
+    leader_tag = f"[PL:{leader['user_id']}]"
+    if recent and leader_tag in recent[0]["message"]:
+        return  # 이미 같은 사람
+    msg = f"👑 {leader['nickname']}님이 포인트 1위를 탈환! ({leader['points']:,}P)"
+    await insert_ticker(db, f"{msg} {leader_tag}", "point_leader")
+    await insert_system_message(db, msg)
+
+
+async def check_eval_leader_change(db, month: str):
+    """평가금 1위 변동 감지 → 전광판"""
+    rows = await db.execute_fetchall(
+        """SELECT ds.user_id, u.nickname, ds.total_value, ds.return_rate
+           FROM daily_snapshots ds JOIN users u ON ds.user_id = u.id
+           WHERE ds.month = ? AND u.is_admin = 0
+           ORDER BY ds.return_rate DESC LIMIT 1""",
+        (month,),
+    )
+    if not rows:
+        return
+    leader = rows[0]
+    recent = await db.execute_fetchall(
+        "SELECT message FROM ticker_messages WHERE category = 'eval_leader' ORDER BY id DESC LIMIT 1"
+    )
+    leader_tag = f"[EL:{leader['user_id']}]"
+    if recent and leader_tag in recent[0]["message"]:
+        return
+    sign = "+" if leader["return_rate"] >= 0 else ""
+    await insert_ticker(db, f"👑 {leader['nickname']}님이 평가금 1위를 탈환! ({sign}{leader['return_rate']:.2f}%) {leader_tag}", "eval_leader")
+
+
+async def check_dice_notable_event(db, winner_id: int, winner_nick: str, total_pot: int, player_count: int):
+    """주사위 주목 이벤트 → 전광판"""
+    messages = []
+
+    # 큰 판 (참가비 기준: pot >= 1000P)
+    if total_pot >= 1000:
+        messages.append(f"🎲 {winner_nick}님이 주사위에서 {total_pot:,}P 획득! ({player_count}인전)")
+
+    # 연승/연패 (dice_stats에서 조회)
+    stats = await db.execute_fetchall(
+        "SELECT current_win_streak, current_loss_streak FROM dice_stats WHERE user_id = ?",
+        (winner_id,),
+    )
+    if stats:
+        ws = stats[0]["current_win_streak"]
+        if ws >= 3:
+            messages.append(f"🔥 {winner_nick}님 주사위 {ws}연승!")
+
+    # 패배자 연패 체크
+    losers = await db.execute_fetchall(
+        """SELECT dp.user_id, u.nickname, ds.current_loss_streak
+           FROM dice_players dp
+           JOIN users u ON dp.user_id = u.id
+           LEFT JOIN dice_stats ds ON dp.user_id = ds.user_id
+           WHERE dp.room_id = (SELECT id FROM dice_rooms WHERE winner_id = ? ORDER BY id DESC LIMIT 1)
+             AND dp.user_id != ?""",
+        (winner_id, winner_id),
+    )
+    for loser in losers:
+        ls = loser["current_loss_streak"] or 0
+        if ls >= 3:
+            messages.append(f"😭 {loser['nickname']}님 주사위 {ls}연패...")
+
+    # 최근 5분간 대량 손실/득점
+    five_min_ago = (dt.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    recent_earned = await db.execute_fetchall(
+        """SELECT SUM(amount) as total, COUNT(*) as cnt
+           FROM point_transactions
+           WHERE user_id = ? AND source = '주사위 우승' AND created_at >= ?""",
+        (winner_id, five_min_ago),
+    )
+    if recent_earned and recent_earned[0]["total"] and recent_earned[0]["total"] >= 3000 and recent_earned[0]["cnt"] >= 2:
+        messages.append(f"📈 {winner_nick}님 최근 5분간 주사위로 {recent_earned[0]['total']:,}P 획득!")
+
+    for loser in losers:
+        recent_lost = await db.execute_fetchall(
+            """SELECT SUM(ABS(amount)) as total, COUNT(*) as cnt
+               FROM point_transactions
+               WHERE user_id = ? AND source IN ('주사위 참가', '주사위 참가비') AND created_at >= ?""",
+            (loser["user_id"], five_min_ago),
+        )
+        if recent_lost and recent_lost[0]["total"] and recent_lost[0]["total"] >= 2000 and recent_lost[0]["cnt"] >= 3:
+            messages.append(f"📉 {loser['nickname']}님 최근 5분간 주사위로 {recent_lost[0]['total']:,}P 잃음...")
+
+    # 가장 주목할 만한 메시지 1개만
+    if messages:
+        await insert_ticker(db, messages[0], "dice")
+
+
+@app.get("/api/ticker/messages")
+async def get_ticker_messages(user=Depends(get_current_user)):
+    """최근 전광판 메시지 (24시간 이내, 최신 20개)"""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT id, message, category, created_at FROM ticker_messages
+               WHERE created_at >= datetime('now','localtime','-24 hours')
+               ORDER BY id DESC LIMIT 20"""
+        )
+        # 메시지에서 내부 태그 제거 후 반환
+        result = []
+        for r in rows:
+            msg = r["message"]
+            # [PL:xxx], [EL:xxx] 같은 내부 태그 제거
+            msg = re.sub(r'\s*\[(?:PL|EL):\d+\]', '', msg)
+            result.append({"id": r["id"], "message": msg, "category": r["category"], "created_at": r["created_at"]})
+        return result
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# SHOP (상점) / BADGE (배지)
+# ═══════════════════════════════════════════════
+
+CHICKEN_COST = 500
+CHICKEN_REMOVE_COST = 1000
+CHICKEN_MAX = 5
+CHICKEN_DURATION_HOURS = 24
+
+
+@app.get("/api/shop/items")
+async def shop_items(user=Depends(get_current_user)):
+    return {
+        "items": [
+            {
+                "id": "chicken",
+                "name": "닭대가리 씌우기",
+                "emoji": "🐔",
+                "description": f"타인 닉네임 앞에 닭대가리를 붙입니다 (24시간 유지, 최대 {CHICKEN_MAX}마리)",
+                "cost": CHICKEN_COST,
+            },
+        ],
+        "remove_chicken_cost": CHICKEN_REMOVE_COST,
+    }
+
+
+@app.post("/api/shop/chicken")
+async def shop_buy_chicken(req: ShopChickenRequest, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        # 대상 유저 찾기
+        target = await db.execute_fetchall(
+            "SELECT id, nickname FROM users WHERE nickname = ? AND is_approved = 1",
+            (req.target_nickname,),
+        )
+        if not target:
+            raise HTTPException(404, "존재하지 않는 닉네임입니다")
+        target_id = target[0]["id"]
+        target_nick = target[0]["nickname"]
+
+        if target_id == user["user_id"]:
+            raise HTTPException(400, "자기 자신에게는 사용할 수 없습니다")
+
+        # 포인트 확인
+        bal = await db.execute_fetchall(
+            "SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],)
+        )
+        if not bal or bal[0]["points"] < CHICKEN_COST:
+            raise HTTPException(400, f"포인트가 부족합니다 ({CHICKEN_COST}P 필요)")
+
+        # 만료된 닭 정리 후 현재 닭 수 확인
+        await db.execute(
+            "DELETE FROM user_badges WHERE badge_type = 'chicken' AND expires_at <= datetime('now','localtime')"
+        )
+        current = await db.execute_fetchall(
+            "SELECT COUNT(*) as cnt FROM user_badges WHERE target_user_id = ? AND badge_type = 'chicken'",
+            (target_id,),
+        )
+        if current[0]["cnt"] >= CHICKEN_MAX:
+            raise HTTPException(400, f"이미 닭대가리 {CHICKEN_MAX}마리가 최대입니다")
+
+        # 포인트 차감
+        await log_point_change(db, user["user_id"], -CHICKEN_COST, "상점", f"닭대가리 → {target_nick}")
+
+        # 배지 추가
+        await db.execute(
+            "INSERT INTO user_badges (target_user_id, sender_user_id, badge_type, expires_at) VALUES (?, ?, 'chicken', datetime('now','localtime','+' || ? || ' hours'))",
+            (target_id, user["user_id"], CHICKEN_DURATION_HOURS),
+        )
+
+        new_count = current[0]["cnt"] + 1
+
+        # 채팅 시스템 메시지
+        sender_nick_row = await db.execute_fetchall("SELECT nickname FROM users WHERE id = ?", (user["user_id"],))
+        sender_nick = sender_nick_row[0]["nickname"] if sender_nick_row else "???"
+        await insert_system_message(db, f"🐔 {sender_nick}님이 {target_nick}님에게 닭대가리를 씌웠습니다! ({'🐔' * new_count})")
+
+        # 전광판 (3마리 이상)
+        if new_count >= 3:
+            await insert_ticker(db, f"🐔 {target_nick}님 닭대가리 {new_count}마리 돌파!", "badge")
+
+        await db.commit()
+
+        new_bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],))
+        return {
+            "message": f"{target_nick}님에게 닭대가리를 씌웠습니다!",
+            "target_chicken_count": new_count,
+            "new_balance": new_bal[0]["points"] if new_bal else 0,
+        }
+    finally:
+        await db.close()
+
+
+@app.post("/api/shop/remove-chicken")
+async def shop_remove_chicken(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        # 만료된 것 정리
+        await db.execute(
+            "DELETE FROM user_badges WHERE badge_type = 'chicken' AND expires_at <= datetime('now','localtime')"
+        )
+
+        # 내 닭 수 확인
+        current = await db.execute_fetchall(
+            "SELECT COUNT(*) as cnt FROM user_badges WHERE target_user_id = ? AND badge_type = 'chicken'",
+            (user["user_id"],),
+        )
+        if current[0]["cnt"] == 0:
+            raise HTTPException(400, "제거할 닭대가리가 없습니다")
+
+        # 포인트 확인
+        bal = await db.execute_fetchall(
+            "SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],)
+        )
+        if not bal or bal[0]["points"] < CHICKEN_REMOVE_COST:
+            raise HTTPException(400, f"포인트가 부족합니다 ({CHICKEN_REMOVE_COST}P 필요)")
+
+        # 포인트 차감
+        await log_point_change(db, user["user_id"], -CHICKEN_REMOVE_COST, "상점", "닭대가리 소각")
+
+        # 전체 삭제
+        await db.execute(
+            "DELETE FROM user_badges WHERE target_user_id = ? AND badge_type = 'chicken'",
+            (user["user_id"],),
+        )
+
+        nick_row = await db.execute_fetchall("SELECT nickname FROM users WHERE id = ?", (user["user_id"],))
+        nick = nick_row[0]["nickname"] if nick_row else "???"
+        await insert_system_message(db, f"🔥 {nick}님이 닭대가리를 소각했습니다!")
+
+        await db.commit()
+        new_bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],))
+        return {
+            "message": "닭대가리를 소각했습니다!",
+            "new_balance": new_bal[0]["points"] if new_bal else 0,
+        }
+    finally:
+        await db.close()
+
+
+@app.get("/api/badge/me")
+async def get_my_badge(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        badge = await get_user_badge_str(db, user["user_id"])
+        # 내 닭 상세 정보
+        chickens = await db.execute_fetchall(
+            """SELECT ub.id, u.nickname as sender, ub.expires_at
+               FROM user_badges ub JOIN users u ON ub.sender_user_id = u.id
+               WHERE ub.target_user_id = ? AND ub.badge_type = 'chicken'
+                 AND ub.expires_at > datetime('now','localtime')
+               ORDER BY ub.created_at ASC""",
+            (user["user_id"],),
+        )
+        return {
+            "badge": badge,
+            "chickens": [{"sender": c["sender"], "expires_at": c["expires_at"]} for c in chickens],
+        }
+    finally:
+        await db.close()
+
+
+@app.get("/api/users/list")
+async def users_list(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT id, nickname FROM users WHERE is_approved = 1 AND is_admin = 0 AND id != ?",
+            (user["user_id"],),
+        )
+        return [{"id": r["id"], "nickname": r["nickname"]} for r in rows]
     finally:
         await db.close()
 
@@ -2237,6 +2715,12 @@ async def roll_dice(room_id: int, user=Depends(get_current_user)):
                 )
                 await log_point_change(db, winner_id, room["total_pot"], "주사위 우승", f"방 #{room_id} 우승 ({room['total_pot']}P)")
                 await _update_dice_stats(db, room_id, winner_id, room["total_pot"])
+                # 전광판: 주사위 주목 이벤트
+                winner_row = await db.execute_fetchall("SELECT nickname FROM users WHERE id = ?", (winner_id,))
+                winner_nick = winner_row[0]["nickname"] if winner_row else "???"
+                player_cnt = len(await db.execute_fetchall("SELECT user_id FROM dice_players WHERE room_id = ?", (room_id,)))
+                await check_dice_notable_event(db, winner_id, winner_nick, room["total_pot"], player_cnt)
+                await check_point_leader_change(db)
                 result["finished"] = True
                 result["winner_id"] = winner_id
 

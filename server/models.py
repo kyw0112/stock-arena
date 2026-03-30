@@ -95,6 +95,14 @@ class DiceRoomCreateRequest(BaseModel):
     dice_max: int = 6
     entry_fee: int
 
+# ── Chat (채팅) ──────────────────────────────
+class ChatSendRequest(BaseModel):
+    message: str
+
+# ── Shop (상점) ──────────────────────────────
+class ShopChickenRequest(BaseModel):
+    target_nickname: str
+
 # ── Admin ─────────────────────────────────────
 class IPApproveRequest(BaseModel):
     ip: str

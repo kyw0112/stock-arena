@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import * as api from './api'
 
 // ── Helpers ───────────────────────────────────
-const VALID_TABS = ['dashboard', 'trade', 'rankings', 'board', 'picks', 'betting', 'rps', 'dice', 'gacha', 'nordle', 'admin']
+const VALID_TABS = ['dashboard', 'trade', 'rankings', 'board', 'picks', 'betting', 'rps', 'dice', 'gacha', 'nordle', 'shop', 'admin']
 const getTabFromHash = () => {
   const h = window.location.hash.replace('#', '')
   return VALID_TABS.includes(h) ? h : 'dashboard'
@@ -377,7 +377,7 @@ function RankingsPage() {
                     {monthly.map(r => (
                       <tr key={r.user_id}>
                         <td className={`text-center ${rankClass(r.rank)}`}>{r.rank}</td>
-                        <td>{r.nickname}</td>
+                        <td>{r.badge}{r.badge ? ' ' : ''}{r.nickname}</td>
                         <td className="text-right mono">{fmt(r.total_value)}</td>
                         <td className="text-right mono" style={{color:'var(--text-dim)'}}>{fmt(r.cash)}</td>
                         <td className="text-center">{r.holdings_count}</td>
@@ -397,7 +397,7 @@ function RankingsPage() {
                     {cumulative.map(r => (
                       <tr key={r.user_id}>
                         <td className={`text-center ${rankClass(r.rank)}`}>{r.rank}</td>
-                        <td>{r.nickname}</td>
+                        <td>{r.badge}{r.badge ? ' ' : ''}{r.nickname}</td>
                         <td className="text-center">{r.months_played}</td>
                         <td className={`text-right mono ${rateClass(r.avg_return)}`}>{fmtRate(r.avg_return)}</td>
                         <td className="text-right mono profit-positive">{fmtRate(r.best_return)}</td>
@@ -418,7 +418,7 @@ function RankingsPage() {
                     {pointRanks.map(r => (
                       <tr key={r.user_id}>
                         <td className={`text-center ${rankClass(r.rank)}`}>{r.rank}</td>
-                        <td>{r.nickname}</td>
+                        <td>{r.badge}{r.badge ? ' ' : ''}{r.nickname}</td>
                         <td className="text-right mono" style={{fontWeight:700,color:'var(--orange)'}}>{fmt(r.points)} P</td>
                       </tr>
                     ))}
@@ -2268,6 +2268,257 @@ function GiftModal({ onClose, onSuccess }) {
 
 
 // ═══════════════════════════════════════════════
+// SHOP (상점)
+// ═══════════════════════════════════════════════
+function ShopPage({ onPointsChange }) {
+  const [users, setUsers] = useState([])
+  const [target, setTarget] = useState('')
+  const [sending, setSending] = useState(false)
+  const [myBadge, setMyBadge] = useState(null)
+  const [shopInfo, setShopInfo] = useState(null)
+  const [msg, setMsg] = useState(null)
+
+  useEffect(() => {
+    api.getUsersList().then(setUsers).catch(() => {})
+    api.getMyBadge().then(setMyBadge).catch(() => {})
+    api.getShopItems().then(setShopInfo).catch(() => {})
+  }, [])
+
+  const handleBuyChicken = async () => {
+    if (!target || sending) return
+    setSending(true)
+    try {
+      const r = await api.buyChicken(target)
+      setMsg({ type: 'success', text: r.message })
+      onPointsChange?.()
+      api.getMyBadge().then(setMyBadge).catch(() => {})
+    } catch (err) {
+      setMsg({ type: 'error', text: err.message })
+    }
+    setSending(false)
+  }
+
+  const handleRemoveChicken = async () => {
+    setSending(true)
+    try {
+      const r = await api.removeChicken()
+      setMsg({ type: 'success', text: r.message })
+      onPointsChange?.()
+      api.getMyBadge().then(setMyBadge).catch(() => {})
+    } catch (err) {
+      setMsg({ type: 'error', text: err.message })
+    }
+    setSending(false)
+  }
+
+  return (
+    <div className="page-card">
+      <h2>{e('🏪','')} 상점</h2>
+
+      {/* 내 배지 현황 */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <h3>내 배지</h3>
+        <div style={{ fontSize: 28, margin: '12px 0' }}>
+          {myBadge?.badge || <span style={{ color: 'var(--text-dim)' }}>없음</span>}
+        </div>
+        {myBadge?.chickens?.length > 0 && (
+          <div>
+            <p style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 8 }}>
+              내 닭대가리 {myBadge.chickens.length}마리:
+            </p>
+            <ul style={{ fontSize: 12, color: 'var(--text-dim)', listStyle: 'none', padding: 0 }}>
+              {myBadge.chickens.map((c, i) => (
+                <li key={i}>{e('🐔','')} {c.sender}님이 부착 — 만료: {c.expires_at?.slice(5, 16)}</li>
+              ))}
+            </ul>
+            <button className="btn-danger" onClick={handleRemoveChicken} disabled={sending}
+              style={{ marginTop: 12 }}>
+              {e('🔥','')} 닭대가리 전체 소각 ({shopInfo?.remove_chicken_cost?.toLocaleString() || '1,000'}P)
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 닭대가리 씌우기 */}
+      <div className="card">
+        <h3>{e('🐔','')} 닭대가리 씌우기</h3>
+        <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '8px 0' }}>
+          {shopInfo?.items?.[0]?.description || '타인 닉네임 앞에 닭대가리를 붙입니다 (24시간 유지, 최대 5마리)'}
+        </p>
+        <p style={{ fontSize: 14, fontWeight: 600, margin: '8px 0' }}>
+          비용: {shopInfo?.items?.[0]?.cost?.toLocaleString() || '500'}P
+        </p>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
+          <select
+            value={target}
+            onChange={ev => setTarget(ev.target.value)}
+            style={{
+              flex: 1, padding: '8px 12px', borderRadius: 8,
+              border: '1px solid var(--border)', background: 'var(--surface)',
+              color: 'var(--text)', fontSize: 13
+            }}
+          >
+            <option value="">대상 선택...</option>
+            {users.map(u => (
+              <option key={u.id} value={u.nickname}>{u.nickname}</option>
+            ))}
+          </select>
+          <button className="btn-primary" onClick={handleBuyChicken} disabled={!target || sending}>
+            {e('🐔','')} 씌우기!
+          </button>
+        </div>
+      </div>
+
+      {msg && (
+        <div className={`toast toast-${msg.type}`} style={{ position: 'static', marginTop: 16 }}>
+          {msg.text}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ═══════════════════════════════════════════════
+// TICKER (전광판)
+// ═══════════════════════════════════════════════
+function Ticker() {
+  const [items, setItems] = useState([])
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const data = await api.getTickerMessages()
+        setItems(data)
+      } catch {}
+    }
+    load()
+    const iv = setInterval(load, 10000) // 10초마다 갱신
+    return () => clearInterval(iv)
+  }, [])
+
+  if (items.length === 0) return null
+
+  const text = items.map(m => m.message).join('　　│　　')
+
+  return (
+    <div className="ticker-bar">
+      <div className="ticker-track">
+        <span className="ticker-content">{text}　　│　　{text}</span>
+      </div>
+    </div>
+  )
+}
+
+
+// ═══════════════════════════════════════════════
+// CHAT PANEL (채팅)
+// ═══════════════════════════════════════════════
+function ChatPanel({ visible, onClose }) {
+  const [messages, setMessages] = useState([])
+  const [lastId, setLastId] = useState(0)
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const messagesEndRef = useRef(null)
+  const containerRef = useRef(null)
+  const shouldAutoScroll = useRef(true)
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  // 스크롤 위치 감지 — 맨 아래 근처면 auto-scroll
+  const handleScroll = () => {
+    const el = containerRef.current
+    if (!el) return
+    shouldAutoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+  }
+
+  // 적응형 폴링 (최근 30초 내 메시지 있으면 1초, 없으면 3초)
+  const lastMsgTimeRef = useRef(Date.now())
+  const pollTimerRef = useRef(null)
+
+  useEffect(() => {
+    if (!visible) return
+    let cancelled = false
+    const poll = async () => {
+      if (cancelled) return
+      try {
+        const data = await api.getChatMessages(lastId)
+        if (data.length > 0) {
+          setMessages(prev => [...prev, ...data])
+          setLastId(data[data.length - 1].id)
+          lastMsgTimeRef.current = Date.now()
+        }
+      } catch {}
+      if (cancelled) return
+      const idle = Date.now() - lastMsgTimeRef.current > 30000
+      pollTimerRef.current = setTimeout(poll, idle ? 3000 : 1000)
+    }
+    poll()
+    return () => { cancelled = true; clearTimeout(pollTimerRef.current) }
+  }, [visible, lastId])
+
+  // 새 메시지 auto-scroll
+  useEffect(() => {
+    if (shouldAutoScroll.current) scrollToBottom()
+  }, [messages])
+
+  const handleSend = async () => {
+    const msg = input.trim()
+    if (!msg || sending) return
+    setSending(true)
+    try {
+      await api.sendChatMessage(msg)
+      setInput('')
+    } catch {}
+    setSending(false)
+  }
+
+  const handleKeyDown = (ev) => {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault()
+      handleSend()
+    }
+  }
+
+  if (!visible) return null
+
+  return (
+    <div className="chat-panel">
+      <div className="chat-header">
+        <span>{e('💬','')} 채팅</span>
+        <button className="chat-close" onClick={onClose}>&times;</button>
+      </div>
+      <div className="chat-messages" ref={containerRef} onScroll={handleScroll}>
+        {messages.map(m => (
+          <div key={m.id} className={`chat-msg ${m.msg_type === 'system' ? 'chat-system' : ''}`}>
+            {m.msg_type === 'user' && (
+              <span className="chat-nick">{m.badge && <span className="chat-badge">{m.badge}</span>}{m.nickname}</span>
+            )}
+            <span className="chat-text">{m.message}</span>
+            <span className="chat-time">{m.created_at?.slice(11, 16)}</span>
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+      <div className="chat-input-area">
+        <input
+          className="chat-input"
+          value={input}
+          onChange={ev => setInput(ev.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="메시지 입력..."
+          maxLength={200}
+        />
+        <button className="chat-send" onClick={handleSend} disabled={sending}>전송</button>
+      </div>
+    </div>
+  )
+}
+
+
+// ═══════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════
 export default function App() {
@@ -2276,6 +2527,8 @@ export default function App() {
   const [userPoints, setUserPoints] = useState(null)
   const [toast, setToast] = useState(null)
   const [showGift, setShowGift] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatHidden, setChatHidden] = useState(() => localStorage.getItem('sa_chat_hidden') === 'true')
   const [theme, setTheme] = useState(() => localStorage.getItem('sa-theme') || 'default')
 
   useEffect(() => {
@@ -2291,6 +2544,14 @@ export default function App() {
   const cycleTheme = () => {
     const idx = THEMES.findIndex(t => t.id === theme)
     setTheme(THEMES[(idx + 1) % THEMES.length].id)
+  }
+  const toggleChatHidden = () => {
+    setChatHidden(prev => {
+      const next = !prev
+      localStorage.setItem('sa_chat_hidden', String(next))
+      if (next) setChatOpen(false)
+      return next
+    })
   }
   const user = api.getUser()
 
@@ -2360,6 +2621,7 @@ export default function App() {
     { id: 'dice', label: `${e('🎲','')} 주사위` },
     { id: 'gacha', label: `${e('🎰','')} 가챠` },
     { id: 'nordle', label: `${e('🔢','')} 노들` },
+    { id: 'shop', label: `${e('🏪','')} 상점` },
   ]
   if (user?.is_admin) tabs.push({ id: 'admin', label: `${e('⚙️','')} 관리` })
 
@@ -2375,6 +2637,7 @@ export default function App() {
       case 'dice': return <DicePage onPointsChange={refreshPoints} />
       case 'gacha': return <GachaPage onPointsChange={refreshPoints} />
       case 'nordle': return <NordlePage />
+      case 'shop': return <ShopPage onPointsChange={refreshPoints} />
       case 'admin': return <AdminPage />
       default: return <DashboardPage />
     }
@@ -2400,6 +2663,9 @@ export default function App() {
               showToast(e.message, 'error');
             }
           }}>무료 200P</button>
+          <button className="btn-chat-toggle" onClick={toggleChatHidden} title={chatHidden ? '채팅 켜기' : '채팅 끄기'}>
+            {chatHidden ? `${e('💬','')} OFF` : `${e('💬','')} ON`}
+          </button>
           <button className="btn-theme" onClick={cycleTheme} title="테마 변경">
             {THEMES.find(t => t.id === theme)?.label}
           </button>
@@ -2412,11 +2678,22 @@ export default function App() {
             onClick={() => changeTab(t.id)}>{t.label}</button>
         ))}
       </div>
+      <Ticker />
       <div className="main-content">
         {renderPage()}
       </div>
       {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
       {showGift && <GiftModal onClose={() => setShowGift(false)} onSuccess={(bal) => { setUserPoints(bal); showToast('선물 완료!') }} />}
+      {!chatHidden && (
+        <>
+          <ChatPanel visible={chatOpen} onClose={() => setChatOpen(false)} />
+          {!chatOpen && (
+            <button className="chat-toggle" onClick={() => setChatOpen(true)} title="채팅 열기">
+              {e('💬','Chat')}
+            </button>
+          )}
+        </>
+      )}
     </div>
   )
 }

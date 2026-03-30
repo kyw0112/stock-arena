@@ -124,6 +124,20 @@ export const nextDiceGame = (id) => request(`/dice/rooms/${id}/next-game`, { met
 export const cancelDiceRoom = (id) => request(`/dice/rooms/${id}/cancel`, { method: 'POST' });
 export const getDiceHistory = () => request('/dice/history');
 
+// Chat (채팅)
+export const getChatMessages = (afterId = 0) => request(`/chat/messages?after_id=${afterId}`);
+export const sendChatMessage = (message) => request('/chat/send', { method: 'POST', body: JSON.stringify({ message }) });
+
+// Ticker (전광판)
+export const getTickerMessages = () => request('/ticker/messages');
+
+// Shop (상점) / Badge (배지)
+export const getShopItems = () => request('/shop/items');
+export const buyChicken = (targetNickname) => request('/shop/chicken', { method: 'POST', body: JSON.stringify({ target_nickname: targetNickname }) });
+export const removeChicken = () => request('/shop/remove-chicken', { method: 'POST' });
+export const getMyBadge = () => request('/badge/me');
+export const getUsersList = () => request('/users/list');
+
 // Admin
 export const adminGetUsers = () => request('/admin/users');
 export const adminApproveUser = (data) => request('/admin/users/approve', { method: 'POST', body: JSON.stringify(data) });
