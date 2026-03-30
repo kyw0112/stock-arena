@@ -383,7 +383,270 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .gacha-odds-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 13px; }
 .gacha-jackpot-row { background: rgba(255,152,0,0.05); }
 
+/* ── Theme Button ─────────────────────── */
+.btn-theme {
+  padding: 5px 10px; font-size: 11px; font-weight: 600;
+  background: var(--surface2); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; transition: all .15s;
+}
+.btn-theme:hover { border-color: var(--accent); color: var(--accent); }
+
 /* ── Scrollbar ─────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ══════════════════════════════════════════
+   THEME: Excel
+   ══════════════════════════════════════════ */
+[data-theme="excel"] {
+  --bg: #e8e8e8;
+  --surface: #ffffff;
+  --surface2: #f2f2f2;
+  --surface3: #e6e6e6;
+  --border: #b4b4b4;
+  --text: #000000;
+  --text-dim: #555555;
+  --accent: #217346;
+  --accent-hover: #1a5c38;
+  --accent-dim: rgba(33,115,70,0.10);
+  --green: #217346;
+  --green-dim: rgba(33,115,70,0.10);
+  --red: #c00000;
+  --red-dim: rgba(192,0,0,0.08);
+  --orange: #bf8f00;
+  --orange-dim: rgba(191,143,0,0.10);
+  --mono: 'Calibri', 'Segoe UI', sans-serif;
+}
+
+[data-theme="excel"] body {
+  font-family: 'Calibri', 'Segoe UI', 'Noto Sans KR', sans-serif;
+  font-size: 11px;
+}
+
+[data-theme="excel"] .topbar {
+  background: #217346;
+  border-bottom: none;
+  height: 44px;
+}
+[data-theme="excel"] .topbar-logo { color: #ffffff; font-size: 14px; font-weight: 700; letter-spacing: 0; }
+[data-theme="excel"] .topbar-logo span { color: rgba(255,255,255,0.7); }
+[data-theme="excel"] .topbar-user .nick { color: #ffffff; }
+[data-theme="excel"] .topbar-user .points { color: #ffd966; }
+[data-theme="excel"] .btn-theme { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.3); color: #fff; }
+[data-theme="excel"] .btn-theme:hover { background: rgba(255,255,255,0.25); border-color: #fff; color: #fff; }
+[data-theme="excel"] .btn-free-charge { background: #ffd966; color: #217346; }
+[data-theme="excel"] .btn-logout { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.3); color: #fff; }
+[data-theme="excel"] .btn-logout:hover { border-color: #ff6b6b; color: #ff6b6b; }
+
+[data-theme="excel"] .tab-bar {
+  background: #f1f1f1;
+  border-bottom: 1px solid #b4b4b4;
+  padding: 0;
+}
+[data-theme="excel"] .tab-item {
+  padding: 8px 16px; font-size: 12px;
+  color: #444; border-bottom: 2px solid transparent;
+  font-weight: 400;
+}
+[data-theme="excel"] .tab-item:hover { color: #217346; background: #e6e6e6; }
+[data-theme="excel"] .tab-item.active {
+  color: #217346; font-weight: 600;
+  background: #ffffff;
+  border-bottom-color: #217346;
+  border-left: 1px solid #b4b4b4;
+  border-right: 1px solid #b4b4b4;
+  border-top: 2px solid #217346;
+  margin-bottom: -1px;
+}
+
+[data-theme="excel"] .card {
+  border-radius: 0;
+  border: 1px solid #b4b4b4;
+  padding: 12px;
+  box-shadow: none;
+}
+[data-theme="excel"] .card-title {
+  font-size: 11px; font-weight: 700; color: #217346;
+  text-transform: none; letter-spacing: 0;
+  border-bottom: 2px solid #217346; padding-bottom: 4px;
+}
+
+[data-theme="excel"] table { font-size: 11px; }
+[data-theme="excel"] th {
+  background: #e2efda; color: #000; font-size: 11px;
+  font-weight: 700; text-transform: none;
+  padding: 6px 8px; border: 1px solid #b4b4b4;
+}
+[data-theme="excel"] td {
+  padding: 4px 8px; border: 1px solid #d4d4d4;
+}
+[data-theme="excel"] tr:hover td { background: #e2efda; }
+
+[data-theme="excel"] .stat-card {
+  border-radius: 0;
+  border: 1px solid #b4b4b4;
+  padding: 8px 12px;
+}
+[data-theme="excel"] .stat-value { font-size: 18px; font-family: 'Calibri', sans-serif; }
+
+[data-theme="excel"] .btn {
+  border-radius: 2px;
+  font-size: 11px;
+  padding: 5px 12px;
+}
+[data-theme="excel"] .btn-primary { background: #217346; border-color: #217346; }
+[data-theme="excel"] .btn-primary:hover { background: #1a5c38; }
+
+[data-theme="excel"] input, [data-theme="excel"] textarea, [data-theme="excel"] select {
+  background: #ffffff; border: 1px solid #b4b4b4; border-radius: 2px;
+  font-size: 11px; color: #000;
+}
+[data-theme="excel"] input:focus, [data-theme="excel"] textarea:focus, [data-theme="excel"] select:focus {
+  border-color: #217346; box-shadow: 0 0 0 1px #217346;
+}
+
+[data-theme="excel"] .login-box { border-radius: 4px; border: 1px solid #b4b4b4; }
+[data-theme="excel"] .login-box h1 { color: #217346; }
+[data-theme="excel"] .login-screen { background: #e8e8e8; }
+[data-theme="excel"] .login-toggle { color: #217346; }
+
+[data-theme="excel"] .nordle-tile { border-radius: 2px; }
+[data-theme="excel"] .nordle-key { border-radius: 2px; }
+
+[data-theme="excel"] .toast { border-radius: 2px; }
+[data-theme="excel"] .badge { border-radius: 2px; }
+
+[data-theme="excel"] .main-content { font-size: 12px; }
+
+/* Formula bar effect */
+[data-theme="excel"] .main-content::before {
+  content: 'fx';
+  display: block;
+  padding: 4px 12px;
+  font-style: italic;
+  font-size: 11px;
+  color: #555;
+  border-bottom: 1px solid #b4b4b4;
+  margin: -24px -24px 16px -24px;
+  padding: 6px 12px;
+  background: #fff;
+}
+
+/* ══════════════════════════════════════════
+   THEME: Finance (증권사 스타일)
+   ══════════════════════════════════════════ */
+[data-theme="finance"] {
+  --bg: #f5f5f5;
+  --surface: #ffffff;
+  --surface2: #fafafa;
+  --surface3: #f0f0f0;
+  --border: #e0e0e0;
+  --text: #1a1a1a;
+  --text-dim: #777777;
+  --accent: #1a3a6b;
+  --accent-hover: #244d8a;
+  --accent-dim: rgba(26,58,107,0.08);
+  --green: #d32f2f;
+  --green-dim: rgba(211,47,47,0.06);
+  --red: #1565c0;
+  --red-dim: rgba(21,101,192,0.06);
+  --orange: #e65100;
+  --orange-dim: rgba(230,81,0,0.08);
+  --mono: 'JetBrains Mono', 'Malgun Gothic', monospace;
+}
+
+[data-theme="finance"] body {
+  font-family: 'Malgun Gothic', 'Noto Sans KR', sans-serif;
+  font-size: 12px;
+}
+
+[data-theme="finance"] .topbar {
+  background: linear-gradient(135deg, #1a1a4e, #2a2a6e);
+  border-bottom: 3px solid #c2185b;
+  height: 52px;
+}
+[data-theme="finance"] .topbar-logo { color: #ffffff; font-size: 15px; font-weight: 700; }
+[data-theme="finance"] .topbar-logo span { color: rgba(255,255,255,0.6); }
+[data-theme="finance"] .topbar-user .nick { color: #ffffff; }
+[data-theme="finance"] .topbar-user .points { color: #ffd54f; }
+[data-theme="finance"] .btn-theme { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.25); color: #fff; }
+[data-theme="finance"] .btn-theme:hover { background: rgba(255,255,255,0.2); border-color: #fff; color: #fff; }
+[data-theme="finance"] .btn-free-charge { background: linear-gradient(135deg, #c2185b, #e91e63); color: #fff; }
+[data-theme="finance"] .btn-logout { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.25); color: #fff; }
+[data-theme="finance"] .btn-logout:hover { border-color: #ff5252; color: #ff5252; }
+
+[data-theme="finance"] .tab-bar {
+  background: #ffffff;
+  border-bottom: 2px solid #e0e0e0;
+  padding: 0 16px;
+}
+[data-theme="finance"] .tab-item {
+  padding: 10px 16px; font-size: 13px;
+  color: #555; border-bottom: 3px solid transparent;
+}
+[data-theme="finance"] .tab-item:hover { color: #1a1a4e; }
+[data-theme="finance"] .tab-item.active {
+  color: #1a1a4e; font-weight: 700;
+  border-bottom-color: #c2185b;
+}
+
+[data-theme="finance"] .card {
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+[data-theme="finance"] .card-title {
+  color: #1a3a6b; font-weight: 700;
+  text-transform: none; letter-spacing: 0;
+  font-size: 13px;
+}
+
+[data-theme="finance"] table { font-size: 12px; }
+[data-theme="finance"] th {
+  background: #f5f5f5; color: #333;
+  font-weight: 700; font-size: 11px;
+  text-transform: none;
+  border-bottom: 2px solid #1a3a6b;
+}
+[data-theme="finance"] tr:hover td { background: #f5f7ff; }
+
+[data-theme="finance"] .stat-card {
+  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+}
+
+/* 상승=빨간, 하락=파란 (한국 증권 컨벤션) */
+[data-theme="finance"] .profit-positive, [data-theme="finance"] .positive { color: #d32f2f; }
+[data-theme="finance"] .profit-negative, [data-theme="finance"] .negative { color: #1565c0; }
+
+[data-theme="finance"] .btn { border-radius: 4px; }
+[data-theme="finance"] .btn-primary { background: #1a3a6b; border-color: #1a3a6b; }
+[data-theme="finance"] .btn-primary:hover { background: #244d8a; }
+[data-theme="finance"] .btn-buy { background: #d32f2f; border-color: #d32f2f; }
+[data-theme="finance"] .btn-sell { background: #1565c0; border-color: #1565c0; }
+
+[data-theme="finance"] input, [data-theme="finance"] textarea, [data-theme="finance"] select {
+  background: #ffffff; border: 1px solid #ccc; border-radius: 4px; color: #1a1a1a;
+}
+[data-theme="finance"] input:focus, [data-theme="finance"] textarea:focus, [data-theme="finance"] select:focus {
+  border-color: #1a3a6b;
+}
+
+[data-theme="finance"] .login-box { border-radius: 8px; border: 1px solid #e0e0e0; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+[data-theme="finance"] .login-box h1 { color: #1a1a4e; }
+[data-theme="finance"] .login-screen { background: linear-gradient(180deg, #1a1a4e 0%, #1a1a4e 40%, #f5f5f5 40%); }
+[data-theme="finance"] .login-toggle { color: #c2185b; }
+
+[data-theme="finance"] .toast { border-radius: 4px; }
+[data-theme="finance"] .badge { border-radius: 3px; }
+
+/* footer accent line */
+[data-theme="finance"] .app-shell::after {
+  content: '';
+  display: block;
+  height: 4px;
+  background: linear-gradient(90deg, #1a1a4e, #c2185b, #e91e63);
+}

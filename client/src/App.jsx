@@ -8,6 +8,9 @@ const getTabFromHash = () => {
   return VALID_TABS.includes(h) ? h : 'dashboard'
 }
 
+const isExcel = () => document.documentElement.getAttribute('data-theme') === 'excel'
+const e = (emoji, text) => isExcel() ? text : emoji
+
 const fmt = (n) => n == null ? '-' : Number(n).toLocaleString('ko-KR')
 const fmtRate = (r) => r == null ? '-' : `${r >= 0 ? '+' : ''}${r.toFixed(2)}%`
 const rateClass = (r) => r > 0 ? 'profit-positive' : r < 0 ? 'profit-negative' : 'neutral'
@@ -40,7 +43,7 @@ function LoginPage({ onLogin }) {
   return (
     <div className="login-screen">
       <div className="login-box">
-        <h1>STOCK ARENA</h1>
+        <h1>KIWOOM</h1>
         <p>사내 모의투자 리그</p>
         <input placeholder="사번" value={form.employee_id}
           onChange={e => setForm({...form, employee_id: e.target.value})}
@@ -488,9 +491,9 @@ function BoardPage({ onPointsChange }) {
         <div className="content">{viewing.content}</div>
         <div className="post-actions">
           <button className={`btn btn-sm ${viewing.my_vote === 'like' ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => handleVote('like')} disabled={!!viewing.my_vote}>👍 {viewing.likes}</button>
+            onClick={() => handleVote('like')} disabled={!!viewing.my_vote}>{e('👍','[좋아요]')} {viewing.likes}</button>
           <button className={`btn btn-sm ${viewing.my_vote === 'dislike' ? 'btn-danger' : 'btn-ghost'}`}
-            onClick={() => handleVote('dislike')} disabled={!!viewing.my_vote}>👎 {viewing.dislikes}</button>
+            onClick={() => handleVote('dislike')} disabled={!!viewing.my_vote}>{e('👎','[싫어요]')} {viewing.dislikes}</button>
           {viewing.my_vote && <span style={{fontSize:11,color:'var(--text-dim)',alignSelf:'center'}}>투표 완료</span>}
         </div>
       </div>
@@ -559,7 +562,7 @@ function BoardPage({ onPointsChange }) {
             <div className="post-meta">
               <span>{p.nickname}</span>
               <span>{p.created_at}</span>
-              <span>👍 {p.likes} 👎 {p.dislikes}</span>
+              <span>{e('👍','[+]')} {p.likes} {e('👎','[-]')} {p.dislikes}</span>
             </div>
           </div>
         )) : <div className="empty">게시글이 없습니다</div>}
@@ -618,7 +621,7 @@ function BettingPage({ onPointsChange }) {
     <div>
       <div className="flex-between mb-16">
         <div style={{display:'flex',alignItems:'center',gap:12}}>
-          <span className="badge badge-orange" style={{fontSize:13,padding:'4px 12px'}}>🎲 {fmt(points)} P</span>
+          <span className="badge badge-orange" style={{fontSize:13,padding:'4px 12px'}}>{e('🎲','[P]')} {fmt(points)} P</span>
         </div>
         <button className="btn btn-primary btn-sm" onClick={() => setCreating(!creating)}>
           {creating ? '취소' : '베팅 만들기'}
@@ -763,18 +766,18 @@ function NordlePage() {
     <div>
       <div className="card">
         <div className="flex-between mb-16">
-          <div className="card-title" style={{margin:0}}>🔢 NORDLE</div>
+          <div className="card-title" style={{margin:0}}>{e('🔢','')} NORDLE</div>
           <div style={{fontSize:12, color:'var(--text-dim)'}}>
             {game.game_over
               ? game.solved
-                ? `✅ 정답! (${game.guesses.length}/${game.max_attempts}번 만에)`
-                : `❌ 실패`
+                ? `${e('✅','[O]')} 정답! (${game.guesses.length}/${game.max_attempts}번 만에)`
+                : `${e('❌','[X]')} 실패`
               : `${game.guesses.length} / ${game.max_attempts}번 시도`}
           </div>
         </div>
 
         <p style={{fontSize:12, color:'var(--text-dim)', marginBottom:20, textAlign:'center'}}>
-          수식을 {game.max_attempts}번 안에 맞춰보세요 · 🟩 정확한 위치 · 🟨 위치 다름 · ⬛ 없는 글자
+          수식을 {game.max_attempts}번 안에 맞춰보세요 · {e('🟩','[녹]')} 정확한 위치 · {e('🟨','[황]')} 위치 다름 · {e('⬛','[회]')} 없는 글자
         </p>
 
         {/* 타일 그리드 */}
@@ -845,7 +848,7 @@ function NordlePage() {
       {/* 관리자: 퍼즐 설정 */}
       {user?.is_admin && (
         <div className="card admin-section">
-          <div className="card-title">⚙️ 오늘의 퍼즐 설정 (관리자)</div>
+          <div className="card-title">{e('⚙️','')} 오늘의 퍼즐 설정 (관리자)</div>
           <NordleAdminPanel onSaved={loadAll} />
         </div>
       )}
@@ -898,10 +901,10 @@ function NordleAdminPanel({ onSaved }) {
     setMsg('')
     try {
       const res = await api.adminSetNordlePuzzle({ equation: eq.trim() })
-      setMsg(`✅ ${res.message}`)
+      setMsg(`${e('✅','[OK]')}${res.message}`)
       setEq('')
       onSaved()
-    } catch (e) { setMsg(`❌ ${e.message}`) }
+    } catch (err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) }
   }
 
   return (
@@ -1059,7 +1062,7 @@ function PicksPage() {
           </div>
           <div style={{fontSize:11,color:'var(--text-dim)',display:'flex',gap:12}}>
             <span>{p.nickname}</span>
-            <span>💬 {p.comment_count}</span>
+            <span>{e('💬','댓글')} {p.comment_count}</span>
           </div>
         </div>
       )) : <div className="card"><div className="empty">아직 Pick이 없습니다</div></div>}
@@ -1116,10 +1119,10 @@ function AdminPage() {
       // 지원 포맷: {"prices": {...}} 또는 {"005930": 58700, ...}
       const prices = parsed.prices || parsed
       const res = await api.adminInputPrices({ date: priceDate, prices })
-      setMsg(`✅ ${res.message} | 종가 ${res.prices_count}개, 체결 ${res.settled_count}건`)
+      setMsg(`${e('✅','[OK]')}${res.message} | 종가 ${res.prices_count}개, 체결 ${res.settled_count}건`)
       setPriceJson('')
       load()
-    } catch (e) { setMsg(`❌ ${e.message}`) }
+    } catch (err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) }
   }
 
   const handleStockLoad = async () => {
@@ -1127,31 +1130,31 @@ function AdminPage() {
     try {
       const stocks = JSON.parse(stockJson)
       const res = await api.adminLoadStocks({ stocks: Array.isArray(stocks) ? stocks : stocks.stocks })
-      setMsg(`✅ ${res.message}`)
+      setMsg(`${e('✅','[OK]')}${res.message}`)
       setStockJson('')
-    } catch (e) { setMsg(`❌ ${e.message}`) }
+    } catch (err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) }
   }
 
   const handlePointAdjust = async () => {
     setMsg('')
     const uid = parseInt(pointAdjust.user_id)
     const amt = parseInt(pointAdjust.amount)
-    if (!uid || !amt || !pointAdjust.reason) return setMsg('❌ 유저 ID, 포인트, 사유를 모두 입력하세요')
+    if (!uid || !amt || !pointAdjust.reason) return setMsg(`${e('❌','[ERR]')} 유저 ID, 포인트, 사유를 모두 입력하세요`)
     try {
       const res = await api.adminAdjustPoints({ user_id: uid, amount: amt, reason: pointAdjust.reason })
-      setMsg(`✅ ${res.message} (잔고: ${res.new_balance.toLocaleString()}P)`)
+      setMsg(`${e('✅','[OK]')}${res.message} (잔고: ${res.new_balance.toLocaleString()}P)`)
       setPointAdjust({ user_id: '', amount: '', reason: '' })
       loadTx()
-    } catch (e) { setMsg(`❌ ${e.message}`) }
+    } catch (err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) }
   }
 
   const handleDestroyDiceRoom = async (roomId) => {
     if (!confirm(`방 #${roomId}을 폭파하시겠습니까? 참가자들에게 참가비가 환불됩니다.`)) return
     try {
       const res = await api.adminDestroyDiceRoom(roomId)
-      setMsg(`✅ ${res.message}`)
+      setMsg(`${e('✅','[OK]')}${res.message}`)
       load()
-    } catch (e) { setMsg(`❌ ${e.message}`) }
+    } catch (err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) }
   }
 
   const handleTxSearch = (e) => {
@@ -1171,7 +1174,7 @@ function AdminPage() {
     <div>
       {/* 종가 입력 */}
       <div className="card admin-section">
-        <div className="card-title">📈 종가 입력</div>
+        <div className="card-title">{e('📈','')} 종가 입력</div>
         {pending.length > 0 && (
           <div style={{marginBottom:12,padding:12,background:'var(--surface2)',borderRadius:8}}>
             <div style={{fontSize:12,color:'var(--text-dim)',marginBottom:6}}>업데이트 필요 종목 ({pending.length}개):</div>
@@ -1197,7 +1200,7 @@ function AdminPage() {
 
       {/* 유저 관리 */}
       <div className="card admin-section">
-        <div className="card-title">👤 유저 관리</div>
+        <div className="card-title">{e('👤','')} 유저 관리</div>
         <div className="table-wrap">
           <table>
             <thead><tr><th>사번</th><th>닉네임</th><th>IP</th><th>상태</th><th></th></tr></thead>
@@ -1223,7 +1226,7 @@ function AdminPage() {
 
       {/* IP 관리 */}
       <div className="card admin-section">
-        <div className="card-title">🔒 IP 화이트리스트</div>
+        <div className="card-title">{e('🔒','')} IP 화이트리스트</div>
         <div className="form-row mb-16">
           <input placeholder="IP 주소" value={newIp.ip} onChange={e => setNewIp({...newIp, ip: e.target.value})} />
           <input placeholder="메모" value={newIp.memo} onChange={e => setNewIp({...newIp, memo: e.target.value})} />
@@ -1248,7 +1251,7 @@ function AdminPage() {
 
       {/* 종목 로드 */}
       <div className="card admin-section">
-        <div className="card-title">📋 종목 DB 로드</div>
+        <div className="card-title">{e('📋','')} 종목 DB 로드</div>
         <div className="form-group">
           <div className="form-label">종목 JSON (배열)</div>
           <textarea className="json-input" rows={4}
@@ -1260,17 +1263,17 @@ function AdminPage() {
 
       {/* 월간 리셋 */}
       <div className="card admin-section">
-        <div className="card-title">🔄 월간 리셋</div>
+        <div className="card-title">{e('🔄','')} 월간 리셋</div>
         <p style={{fontSize:13,color:'var(--text-dim)',marginBottom:12}}>이번 달 시드를 1억으로 초기화하고 대기 주문을 모두 취소합니다.</p>
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          <button className="btn btn-danger" onClick={async () => { if(confirm('순수 리셋: 포인트 보상 없이 리셋합니다. 진행하시겠습니까?')) { try { const r = await api.adminMonthReset(false); setMsg(`✅ ${r.message}`) } catch(e) { setMsg(`❌ ${e.message}`) } } }}>순수 리셋</button>
-          <button className="btn btn-primary" onClick={async () => { if(confirm('랭킹 보상 후 리셋: 1등 +5000P / 2등 +3000P / 3등 +1000P / 꼴등 -500P 적용 후 리셋합니다. 진행하시겠습니까?')) { try { const r = await api.adminMonthReset(true); setMsg(`✅ ${r.message}`) } catch(e) { setMsg(`❌ ${e.message}`) } } }}>랭킹 보상 + 리셋</button>
+          <button className="btn btn-danger" onClick={async () => { if(confirm('순수 리셋: 포인트 보상 없이 리셋합니다. 진행하시겠습니까?')) { try { const r = await api.adminMonthReset(false); setMsg(`${e('✅','[OK]')} ${r.message}`) } catch(err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) } } }}>순수 리셋</button>
+          <button className="btn btn-primary" onClick={async () => { if(confirm('랭킹 보상 후 리셋: 1등 +5000P / 2등 +3000P / 3등 +1000P / 꼴등 -500P 적용 후 리셋합니다. 진행하시겠습니까?')) { try { const r = await api.adminMonthReset(true); setMsg(`${e('✅','[OK]')} ${r.message}`) } catch(err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) } } }}>랭킹 보상 + 리셋</button>
         </div>
       </div>
 
       {/* 주사위 방 관리 */}
       <div className="card admin-section">
-        <div className="card-title">🎲 주사위 방 관리</div>
+        <div className="card-title">{e('🎲','')} 주사위 방 관리</div>
         {diceRooms.length === 0 ? (
           <p style={{fontSize:13,color:'var(--text-dim)'}}>진행 중인 방이 없습니다.</p>
         ) : (
@@ -1299,7 +1302,7 @@ function AdminPage() {
 
       {/* 포인트 수동 조정 */}
       <div className="card admin-section">
-        <div className="card-title">💰 포인트 수동 조정</div>
+        <div className="card-title">{e('💰','')} 포인트 수동 조정</div>
         <p style={{fontSize:13,color:'var(--text-dim)',marginBottom:12}}>특정 유저의 포인트를 지급하거나 차감합니다. (양수=지급, 음수=차감)</p>
         <div className="form-row mb-16" style={{gap:8,flexWrap:'wrap'}}>
           <select value={pointAdjust.user_id} onChange={e => setPointAdjust({...pointAdjust, user_id: e.target.value})}
@@ -1319,7 +1322,7 @@ function AdminPage() {
 
       {/* 포인트 가감 내역 */}
       <div className="card admin-section">
-        <div className="card-title">📋 포인트 가감 내역</div>
+        <div className="card-title">{e('📋','')} 포인트 가감 내역</div>
         <form onSubmit={handleTxSearch} className="form-row mb-16" style={{gap:8,flexWrap:'wrap'}}>
           <select value={txFilter.user_id} onChange={e => setTxFilter({...txFilter, user_id: e.target.value})}
             style={{minWidth:140}}>
@@ -1374,8 +1377,8 @@ function AdminPage() {
 // ═══════════════════════════════════════════════
 // RPS PAGE (가위바위보)
 // ═══════════════════════════════════════════════
-const RPS_LABELS = { rock: '바위 ✊', paper: '보 ✋', scissors: '가위 ✌️' }
-const RPS_EMOJI = { rock: '✊', paper: '✋', scissors: '✌️' }
+const RPS_LABELS = () => ({ rock: `바위 ${e('✊','[바위]')}`, paper: `보 ${e('✋','[보]')}`, scissors: `가위 ${e('✌️','[가위]')}` })
+const RPS_EMOJI = () => ({ rock: e('✊','[바위]'), paper: e('✋','[보]'), scissors: e('✌️','[가위]') })
 
 function RPSPage({ onPointsChange }) {
   const [points, setPoints] = useState(0)
@@ -1424,7 +1427,7 @@ function RPSPage({ onPointsChange }) {
       <div className="card mb-16">
         <div className="flex-between mb-16">
           <div className="card-title" style={{margin:0}}>가위바위보</div>
-          <span className="badge badge-orange" style={{fontSize:13,padding:'4px 12px'}}>🎲 {fmt(points)} P</span>
+          <span className="badge badge-orange" style={{fontSize:13,padding:'4px 12px'}}>{e('🎲','[P]')} {fmt(points)} P</span>
         </div>
 
         <div className="form-group">
@@ -1436,7 +1439,7 @@ function RPSPage({ onPointsChange }) {
         <div className="rps-choices">
           {['scissors', 'rock', 'paper'].map(c => (
             <button key={c} className="rps-choice" onClick={() => play(c)} disabled={playing}>
-              <span className="rps-emoji">{RPS_EMOJI[c]}</span>
+              {!isExcel() && <span className="rps-emoji">{RPS_EMOJI()[c]}</span>}
               <span className="rps-label">{c === 'rock' ? '바위' : c === 'paper' ? '보' : '가위'}</span>
             </button>
           ))}
@@ -1447,12 +1450,12 @@ function RPSPage({ onPointsChange }) {
             <div className="rps-battle">
               <div className="rps-side">
                 <div style={{fontSize:11,color:'var(--text-dim)',marginBottom:4}}>나</div>
-                <span style={{fontSize:40}}>{RPS_EMOJI[result.player_choice]}</span>
+                <span style={{fontSize:40}}>{RPS_EMOJI()[result.player_choice]}</span>
               </div>
               <span style={{fontSize:18,color:'var(--text-dim)',alignSelf:'center'}}>VS</span>
               <div className="rps-side">
                 <div style={{fontSize:11,color:'var(--text-dim)',marginBottom:4}}>컴퓨터</div>
-                <span style={{fontSize:40}}>{RPS_EMOJI[result.computer_choice]}</span>
+                <span style={{fontSize:40}}>{RPS_EMOJI()[result.computer_choice]}</span>
               </div>
             </div>
             <div style={{textAlign:'center',marginTop:12}}>
@@ -1475,8 +1478,8 @@ function RPSPage({ onPointsChange }) {
                 {history.map(g => (
                   <tr key={g.id}>
                     <td style={{fontSize:11,color:'var(--text-dim)'}}>{g.created_at}</td>
-                    <td className="text-center">{RPS_EMOJI[g.player_choice]}</td>
-                    <td className="text-center">{RPS_EMOJI[g.computer_choice]}</td>
+                    <td className="text-center">{RPS_EMOJI()[g.player_choice]}</td>
+                    <td className="text-center">{RPS_EMOJI()[g.computer_choice]}</td>
                     <td className="text-center">
                       <span className={`badge ${g.result === 'win' ? 'badge-green' : g.result === 'lose' ? 'badge-red' : 'badge-orange'}`}>
                         {g.result === 'win' ? '승' : g.result === 'lose' ? '패' : '무'}
@@ -1671,7 +1674,7 @@ function DicePage({ onPointsChange }) {
         <div className="card mb-16">
           <div className="flex-between mb-8">
             <div className="card-title" style={{margin:0}}>
-              {room.mode === 'HIGH' ? '🔺 HIGH' : '🔻 LOW'} 모드
+              {room.mode === 'HIGH' ? `${e('🔺','▲')} HIGH` : `${e('🔻','▼')} LOW`} 모드
             </div>
             <span className={`badge ${room.status === 'ROLLING' ? 'badge-green' : room.status === 'CANCELLED' ? 'badge-red' : 'badge-orange'}`}>
               {room.status === 'ROLLING' ? '진행중' : room.status === 'CANCELLED' ? '취소됨'
@@ -1711,18 +1714,18 @@ function DicePage({ onPointsChange }) {
                       if (!roll) return <span className="badge badge-orange" style={{fontSize:10}}>굴리는 중...</span>
                       if (room.all_rolled) return (
                         <span className={`dice-roll-value ${roll.eliminated ? 'eliminated' : ''}`}>
-                          🎲 {roll.roll_value} {roll.eliminated ? '💀' : ''}
+                          {e('🎲','#')}{roll.roll_value} {roll.eliminated ? e('💀','[탈락]') : ''}
                         </span>
                       )
-                      if (p.user_id === currentUser?.user_id) return <span className="dice-roll-value">🎲 {roll.roll_value}</span>
+                      if (p.user_id === currentUser?.user_id) return <span className="dice-roll-value">{e('🎲','#')}{roll.roll_value}</span>
                       return <span className="badge badge-orange" style={{fontSize:10}}>완료</span>
                     })()
                   )}
                   {/* 라운드 결과 확정 후 */}
                   {room.status === 'WAITING' && room.current_round > 0 && roundResult !== 'REROLL' && roll && (
                     <span className="dice-roll-value" style={{display:'inline-flex',alignItems:'center',gap:6}}>
-                      🎲 {roll.roll_value}
-                      {roll.eliminated ? <span style={{color:'var(--accent-red)'}}>💀</span> : ''}
+                      {e('🎲','#')}{roll.roll_value}
+                      {roll.eliminated ? <span style={{color:'var(--accent-red)'}}>{e('💀','[탈락]')}</span> : ''}
                     </span>
                   )}
                 </div>
@@ -1747,7 +1750,7 @@ function DicePage({ onPointsChange }) {
                 <>
                   <button className="btn btn-primary" onClick={handleStartRound}
                     disabled={!allReady || room.players.length < 2}>
-                    🎲 게임 시작
+                    {e('🎲','')} 게임 시작
                   </button>
                   <button className="btn btn-outline" onClick={handleCancel} style={{color:'var(--accent-red)'}}>방 끝내기</button>
                 </>
@@ -1767,7 +1770,7 @@ function DicePage({ onPointsChange }) {
           <div className="card mb-16 dice-roll-action">
             <div className="card-title" style={{margin:'0 0 12px'}}>주사위를 굴리세요!</div>
             <button className="btn btn-primary dice-roll-btn" onClick={handleRoll} disabled={rolling}>
-              {rolling ? '굴리는 중...' : '🎲 주사위 굴리기'}
+              {rolling ? '굴리는 중...' : `${e('🎲','')} 주사위 굴리기`}
             </button>
           </div>
         )}
@@ -1787,7 +1790,7 @@ function DicePage({ onPointsChange }) {
           return (
             <div className="card mb-16 dice-winner-card">
               <div style={{textAlign:'center',marginBottom:16}}>
-                <div style={{fontSize:40,marginBottom:8}}>🏆</div>
+                <div style={{fontSize:40,marginBottom:8}}>{e('🏆','[우승]')}</div>
                 <div style={{fontSize:18,fontWeight:700,marginBottom:2}}>{winnerPlayer?.nickname} 우승!</div>
                 <div style={{fontSize:13,color:'var(--text-dim)'}}>
                   동수 탈락 → {room.mode === 'HIGH' ? '최고값' : '최저값'} 승리
@@ -1802,7 +1805,7 @@ function DicePage({ onPointsChange }) {
                   return (
                     <div key={r.user_id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid rgba(255,255,255,0.08)',fontSize:13}}>
                       <span style={{opacity: isWinner ? 1 : 0.6}}>
-                        {isWinner ? '🏆' : r.eliminated ? '💀' : '😢'} {r.nickname}
+                        {isWinner ? e('🏆','[우승]') : r.eliminated ? e('💀','[탈락]') : e('😢','[패배]')} {r.nickname}
                         <span style={{color:'var(--text-dim)',marginLeft:6,fontSize:11}}>({label})</span>
                       </span>
                       <span style={{display:'flex',alignItems:'center',gap:10}}>
@@ -1819,7 +1822,7 @@ function DicePage({ onPointsChange }) {
               {/* 방장 액션 */}
               {isCreator && (
                 <div style={{display:'flex',gap:8,justifyContent:'center',marginTop:16}}>
-                  <button className="btn btn-primary" onClick={handleNextGame}>🎲 한 판 더 ({fmt(room.entry_fee)}P)</button>
+                  <button className="btn btn-primary" onClick={handleNextGame}>{e('🎲','')} 한 판 더 ({fmt(room.entry_fee)}P)</button>
                   <button className="btn btn-outline" onClick={handleCancel} style={{color:'var(--accent-red)'}}>방 끝내기</button>
                 </div>
               )}
@@ -1836,14 +1839,14 @@ function DicePage({ onPointsChange }) {
         {roundResult === 'DRAW' && (
           <div className="card mb-16" style={{padding:24}}>
             <div style={{textAlign:'center',marginBottom:12}}>
-              <div style={{fontSize:36,marginBottom:8}}>🤝</div>
+              <div style={{fontSize:36,marginBottom:8}}>{e('🤝','[무승부]')}</div>
               <div style={{fontSize:18,fontWeight:700,marginBottom:4}}>무승부!</div>
               <div style={{color:'var(--text-dim)',fontSize:13}}>전원 동수 탈락 — 참가비 환불 완료</div>
             </div>
             <div style={{borderTop:'1px solid var(--border)',paddingTop:12}}>
               {room.current_rolls?.map(r => (
                 <div key={r.user_id} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',fontSize:13}}>
-                  <span>💀 {r.nickname}</span>
+                  <span>{e('💀','[탈락]')} {r.nickname}</span>
                   <span style={{display:'flex',alignItems:'center',gap:10}}>
                     <span style={{fontFamily:'var(--font-mono)',fontSize:15}}>{r.roll_value}</span>
                     <span style={{fontWeight:700,fontFamily:'var(--font-mono)',color:'var(--text-dim)'}}>±0P</span>
@@ -1853,7 +1856,7 @@ function DicePage({ onPointsChange }) {
             </div>
             {isCreator && (
               <div style={{display:'flex',gap:8,justifyContent:'center',marginTop:16}}>
-                <button className="btn btn-primary" onClick={handleNextGame}>🎲 한 판 더 ({fmt(room.entry_fee)}P)</button>
+                <button className="btn btn-primary" onClick={handleNextGame}>{e('🎲','')} 한 판 더 ({fmt(room.entry_fee)}P)</button>
                 <button className="btn btn-outline" onClick={handleCancel} style={{color:'var(--accent-red)'}}>방 끝내기</button>
               </div>
             )}
@@ -1872,7 +1875,7 @@ function DicePage({ onPointsChange }) {
             {room.current_rolls?.sort((a, b) => b.roll_value - a.roll_value)?.map(r => (
               <div key={r.user_id} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',fontSize:13}}>
                 <span>{r.nickname}</span>
-                <span>🎲 {r.roll_value} {r.eliminated ? <span style={{color:'var(--accent-red)'}}>💀</span> : ''}</span>
+                <span>{e('🎲','#')}{r.roll_value} {r.eliminated ? <span style={{color:'var(--accent-red)'}}>{e('💀','[탈락]')}</span> : ''}</span>
               </div>
             ))}
           </div>
@@ -1881,7 +1884,7 @@ function DicePage({ onPointsChange }) {
         {/* 방 취소됨 */}
         {room.status === 'CANCELLED' && (
           <div className="card mb-16" style={{textAlign:'center',padding:24}}>
-            <div style={{fontSize:30,marginBottom:8}}>🚫</div>
+            <div style={{fontSize:30,marginBottom:8}}>{e('🚫','[종료]')}</div>
             <div style={{fontSize:16,fontWeight:600,marginBottom:4}}>방이 종료되었습니다</div>
             <div style={{color:'var(--text-dim)',fontSize:13,marginBottom:12}}>참가비가 환불됩니다</div>
             <button className="btn btn-outline" onClick={goBack} style={{fontSize:12}}>목록으로</button>
@@ -1920,10 +1923,10 @@ function DicePage({ onPointsChange }) {
     <div>
       <div className="flex-between mb-16">
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <span className="badge badge-orange" style={{fontSize:13,padding:'4px 12px'}}>🎲 {fmt(points)} P</span>
+          <span className="badge badge-orange" style={{fontSize:13,padding:'4px 12px'}}>{e('🎲','[P]')} {fmt(points)} P</span>
         </div>
         <div style={{display:'flex',gap:8}}>
-          <button className="btn btn-outline" onClick={loadHistory} style={{fontSize:12}}>📜 기록</button>
+          <button className="btn btn-outline" onClick={loadHistory} style={{fontSize:12}}>{e('📜','')} 기록</button>
           <button className="btn btn-primary" onClick={() => setShowCreate(!showCreate)} style={{fontSize:12}}>
             {showCreate ? '취소' : '+ 방 만들기'}
           </button>
@@ -1940,9 +1943,9 @@ function DicePage({ onPointsChange }) {
             <div className="form-label">모드</div>
             <div style={{display:'flex',gap:8}}>
               <button className={`btn ${createForm.mode === 'HIGH' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setCreateForm({...createForm, mode: 'HIGH'})}>🔺 HIGH (높은 수 승리)</button>
+                onClick={() => setCreateForm({...createForm, mode: 'HIGH'})}>{e('🔺','▲')} HIGH (높은 수 승리)</button>
               <button className={`btn ${createForm.mode === 'LOW' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setCreateForm({...createForm, mode: 'LOW'})}>🔻 LOW (낮은 수 승리)</button>
+                onClick={() => setCreateForm({...createForm, mode: 'LOW'})}>{e('🔻','▼')} LOW (낮은 수 승리)</button>
             </div>
           </div>
           <div style={{display:'flex',gap:12}}>
@@ -1979,7 +1982,7 @@ function DicePage({ onPointsChange }) {
             <div key={r.id} className="card mb-8 dice-room-card" onClick={() => enterRoom(r.id)}>
               <div className="flex-between">
                 <div>
-                  <span style={{fontWeight:600}}>{r.mode === 'HIGH' ? '🔺 HIGH' : '🔻 LOW'}</span>
+                  <span style={{fontWeight:600}}>{r.mode === 'HIGH' ? `${e('🔺','▲')} HIGH` : `${e('🔻','▼')} LOW`}</span>
                   <span style={{fontSize:12,color:'var(--text-dim)',marginLeft:8}}>by {r.creator_name}</span>
                 </div>
                 <span className={`badge ${r.status === 'WAITING' ? 'badge-orange' : 'badge-green'}`}>
@@ -2008,7 +2011,7 @@ function DicePage({ onPointsChange }) {
         <div className="modal-overlay" onClick={() => setShowHistory(false)}>
           <div className="modal-box" onClick={e => e.stopPropagation()} style={{maxWidth:500}}>
             <div className="flex-between mb-16">
-              <div className="card-title" style={{margin:0}}>📜 게임 기록</div>
+              <div className="card-title" style={{margin:0}}>{e('📜','')} 게임 기록</div>
               <button className="btn btn-outline" onClick={() => setShowHistory(false)} style={{fontSize:12,padding:'4px 8px'}}>닫기</button>
             </div>
             {history.length === 0 ? (
@@ -2043,12 +2046,12 @@ function DicePage({ onPointsChange }) {
 // ═══════════════════════════════════════════════
 // GACHA PAGE (일일 가챠 뽑기)
 // ═══════════════════════════════════════════════
-const GACHA_GRADE_INFO = {
-  MISS:    { label: '꽝',   emoji: '😭', color: '#888' },
-  SMALL:   { label: '소량', emoji: '🪙', color: '#4caf50' },
-  MEDIUM:  { label: '중간', emoji: '💰', color: '#2196f3' },
-  JACKPOT: { label: '잭팟', emoji: '🎉', color: '#ff9800' },
-}
+const GACHA_GRADE_INFO = () => ({
+  MISS:    { label: '꽝',   emoji: e('😭','[꽝]'), color: '#888' },
+  SMALL:   { label: '소량', emoji: e('🪙','[소]'), color: '#4caf50' },
+  MEDIUM:  { label: '중간', emoji: e('💰','[중]'), color: '#2196f3' },
+  JACKPOT: { label: '잭팟', emoji: e('🎉','[잭팟]'), color: '#ff9800' },
+})
 
 function GachaPage({ onPointsChange }) {
   const [todayData, setTodayData] = useState(null)
@@ -2086,18 +2089,18 @@ function GachaPage({ onPointsChange }) {
     }
   }
 
-  const grade = result ? GACHA_GRADE_INFO[result.grade] : null
+  const grade = result ? GACHA_GRADE_INFO()[result.grade] : null
   const freeUsed = todayData?.free_used
   const spinCount = todayData?.spin_count ?? 0
 
   return (
     <div className="page-container">
-      <h2>🎰 일일 가챠 뽑기</h2>
+      <h2>{e('🎰','')} 일일 가챠 뽑기</h2>
       <div className="card gacha-card">
         <div className="gacha-machine">
           <div className={`gacha-display ${animating ? 'gacha-spinning' : ''}`}>
             {animating ? (
-              <span className="gacha-spin-icon">🎰</span>
+              <span className="gacha-spin-icon">{e('🎰','[?]')}</span>
             ) : result ? (
               <div className="gacha-result-inner" style={{ color: grade.color }}>
                 <div className="gacha-result-emoji">{grade.emoji}</div>
@@ -2110,7 +2113,7 @@ function GachaPage({ onPointsChange }) {
                 )}
               </div>
             ) : (
-              <span className="gacha-spin-icon">🎰</span>
+              <span className="gacha-spin-icon">{e('🎰','[?]')}</span>
             )}
           </div>
 
@@ -2130,10 +2133,10 @@ function GachaPage({ onPointsChange }) {
         <div className="gacha-odds">
           <div className="gacha-odds-title">확률표</div>
           <div className="gacha-odds-grid">
-            <div style={{ color: GACHA_GRADE_INFO.MISS.color }}>😭 꽝 — 50%</div>
-            <div style={{ color: GACHA_GRADE_INFO.SMALL.color }}>🪙 소량 (10~50P) — 30%</div>
-            <div style={{ color: GACHA_GRADE_INFO.MEDIUM.color }}>💰 중간 (100~300P) — 15%</div>
-            <div style={{ color: GACHA_GRADE_INFO.JACKPOT.color }}>🎉 잭팟 (500~2000P) — 5%</div>
+            <div style={{ color: GACHA_GRADE_INFO().MISS.color }}>{e('😭','[꽝]')} 꽝 — 50%</div>
+            <div style={{ color: GACHA_GRADE_INFO().SMALL.color }}>{e('🪙','[소]')} 소량 (10~50P) — 30%</div>
+            <div style={{ color: GACHA_GRADE_INFO().MEDIUM.color }}>{e('💰','[중]')} 중간 (100~300P) — 15%</div>
+            <div style={{ color: GACHA_GRADE_INFO().JACKPOT.color }}>{e('🎉','[잭팟]')} 잭팟 (500~2000P) — 5%</div>
           </div>
         </div>
       </div>
@@ -2145,7 +2148,7 @@ function GachaPage({ onPointsChange }) {
             <thead><tr><th>#</th><th>등급</th><th>획득</th><th>비용</th></tr></thead>
             <tbody>
               {todayData.today_spins.map((s, i) => {
-                const gi = GACHA_GRADE_INFO[s.grade]
+                const gi = GACHA_GRADE_INFO()[s.grade]
                 return (
                   <tr key={i}>
                     <td>{i + 1}</td>
@@ -2162,13 +2165,13 @@ function GachaPage({ onPointsChange }) {
 
       {jackpots.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
-          <div className="card-title">🎉 최근 잭팟 당첨자</div>
+          <div className="card-title">{e('🎉','')} 최근 잭팟 당첨자</div>
           <table className="table">
             <thead><tr><th>닉네임</th><th>획득</th><th>일시</th></tr></thead>
             <tbody>
               {jackpots.map((j, i) => (
                 <tr key={i} className="gacha-jackpot-row">
-                  <td>🎉 {j.nickname}</td>
+                  <td>{e('🎉','')} {j.nickname}</td>
                   <td style={{ color: '#ff9800', fontWeight: 700 }}>+{j.points_won.toLocaleString()}P</td>
                   <td style={{ fontSize: 12, color: '#888' }}>{j.created_at?.slice(0, 16)}</td>
                 </tr>
@@ -2210,7 +2213,7 @@ function GiftModal({ onClose, onSuccess }) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box" onClick={e => e.stopPropagation()}>
         <div className="flex-between mb-16">
-          <div className="card-title" style={{margin:0}}>🎁 포인트 선물</div>
+          <div className="card-title" style={{margin:0}}>{e('🎁','')} 포인트 선물</div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
         </div>
         <div className="form-group">
@@ -2243,6 +2246,22 @@ export default function App() {
   const [userPoints, setUserPoints] = useState(null)
   const [toast, setToast] = useState(null)
   const [showGift, setShowGift] = useState(false)
+  const [theme, setTheme] = useState(() => localStorage.getItem('sa-theme') || 'default')
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('sa-theme', theme)
+  }, [theme])
+
+  const THEMES = [
+    { id: 'default', label: '🌙 다크' },
+    { id: 'excel', label: 'Excel' },
+    { id: 'finance', label: '🏦 금융' },
+  ]
+  const cycleTheme = () => {
+    const idx = THEMES.findIndex(t => t.id === theme)
+    setTheme(THEMES[(idx + 1) % THEMES.length].id)
+  }
   const user = api.getUser()
 
   const refreshPoints = useCallback(() => {
@@ -2260,7 +2279,7 @@ export default function App() {
     refreshPoints()
     api.checkAttendance().then(r => {
       if (r.checked_in) {
-        showToast(`출석 체크! +${r.points_awarded}P 적립 🎉`)
+        showToast(`출석 체크! +${r.points_awarded}P 적립 ${e('🎉','')}`)
         setUserPoints(r.total_points)
       }
     }).catch(() => {})
@@ -2301,18 +2320,18 @@ export default function App() {
   if (!loggedIn) return <LoginPage onLogin={handleLogin} />
 
   const tabs = [
-    { id: 'dashboard', label: '📊 대시보드' },
-    { id: 'trade', label: '💹 매매' },
-    { id: 'rankings', label: '🏆 랭킹' },
-    { id: 'board', label: '📝 게시판' },
-    { id: 'picks', label: "🎯 방's pick" },
-    { id: 'betting', label: '🎲 베팅' },
-    { id: 'rps', label: '✊ 가위바위보' },
-    { id: 'dice', label: '🎲 주사위' },
-    { id: 'gacha', label: '🎰 가챠' },
-    { id: 'nordle', label: '🔢 노들' },
+    { id: 'dashboard', label: `${e('📊','')} 대시보드` },
+    { id: 'trade', label: `${e('💹','')} 매매` },
+    { id: 'rankings', label: `${e('🏆','')} 랭킹` },
+    { id: 'board', label: `${e('📝','')} 게시판` },
+    { id: 'picks', label: `${e('🎯','')} 방's pick` },
+    { id: 'betting', label: `${e('🎲','')} 베팅` },
+    { id: 'rps', label: `${e('✊','')} 가위바위보` },
+    { id: 'dice', label: `${e('🎲','')} 주사위` },
+    { id: 'gacha', label: `${e('🎰','')} 가챠` },
+    { id: 'nordle', label: `${e('🔢','')} 노들` },
   ]
-  if (user?.is_admin) tabs.push({ id: 'admin', label: '⚙️ 관리' })
+  if (user?.is_admin) tabs.push({ id: 'admin', label: `${e('⚙️','')} 관리` })
 
   const renderPage = () => {
     switch (tab) {
@@ -2334,12 +2353,12 @@ export default function App() {
   return (
     <div className="app-shell">
       <div className="topbar">
-        <div className="topbar-logo">STOCK ARENA <span>v1.0</span></div>
+        <div className="topbar-logo">KIWOOM <span>v1.0</span></div>
         <div className="topbar-user">
           <span className="nick">{user?.nickname}</span>
           {userPoints !== null && (
             <span className="points" onClick={() => setShowGift(true)} title="클릭하여 포인트 선물">
-              🎲 {fmt(userPoints)} P
+              {e('🎲','[P]')} {fmt(userPoints)} P
             </span>
           )}
           <button className="btn-free-charge" onClick={async () => {
@@ -2351,6 +2370,9 @@ export default function App() {
               showToast(e.message, 'error');
             }
           }}>무료 200P</button>
+          <button className="btn-theme" onClick={cycleTheme} title="테마 변경">
+            {THEMES.find(t => t.id === theme)?.label}
+          </button>
           <button className="btn-logout" onClick={handleLogout}>로그아웃</button>
         </div>
       </div>
