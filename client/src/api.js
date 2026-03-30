@@ -142,5 +142,6 @@ export const adminGetTransactions = (params = {}) => {
   if (params.page) q.set('page', params.page);
   return request(`/admin/points/transactions?${q.toString()}`);
 };
+export const adminGetSettlementStatus = () => request('/admin/settlement-status');
 export const adminGetDiceRooms = () => request('/admin/dice/rooms');
 export const adminDestroyDiceRoom = (id) => request(`/admin/dice/rooms/${id}/destroy`, { method: 'POST' });

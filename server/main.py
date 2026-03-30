@@ -788,6 +788,47 @@ async def admin_input_prices(req: PriceInputRequest, user=Depends(get_admin_user
         await db.close()
 
 
+@app.get("/api/admin/settlement-status")
+async def admin_settlement_status(user=Depends(get_admin_user)):
+    """이번 달 체결 입력 현황: 입력 완료 날짜 + 미입력 영업일"""
+    db = await get_db()
+    try:
+        month = current_month()
+
+        # 입력 완료된 날짜들 (prices 테이블에서 이번 달 distinct dates)
+        rows = await db.execute_fetchall(
+            "SELECT DISTINCT date FROM prices WHERE date LIKE ? ORDER BY date",
+            (f"{month}%",)
+        )
+        entered_dates = [r["date"] for r in rows]
+
+        # 이번 달의 영업일 계산 (월~금, 공휴일 제외하지 않음)
+        today = dt.now().date()
+        year, mon = int(month[:4]), int(month[5:7])
+        import calendar
+        _, last_day = calendar.monthrange(year, mon)
+        business_days = []
+        for d in range(1, last_day + 1):
+            date_obj = dt(year, mon, d).date()
+            if date_obj > today:
+                break
+            if date_obj.weekday() < 5:  # 월~금
+                business_days.append(date_obj.isoformat())
+
+        missing_dates = [d for d in business_days if d not in entered_dates]
+
+        return {
+            "month": month,
+            "entered_dates": entered_dates,
+            "missing_dates": missing_dates,
+            "total_business_days": len(business_days),
+            "entered_count": len(entered_dates),
+            "missing_count": len(missing_dates),
+        }
+    finally:
+        await db.close()
+
+
 @app.post("/api/admin/stocks/load-csv")
 async def admin_load_stock_csv(request: Request, user=Depends(get_admin_user)):
     """종목 CSV 데이터 로드 (JSON body: {"stocks": [{"code":"005930","name":"삼성전자","market":"KOSPI"}, ...]})"""

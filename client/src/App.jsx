@@ -1084,12 +1084,14 @@ function AdminPage() {
   const [transactions, setTransactions] = useState({ transactions: [], total: 0, page: 1, pages: 0 })
   const [txFilter, setTxFilter] = useState({ user_id: '', source: '', page: 1 })
   const [diceRooms, setDiceRooms] = useState([])
+  const [settlement, setSettlement] = useState(null)
 
   const load = () => {
     api.adminGetUsers().then(setUsers).catch(() => {})
     api.adminGetIPs().then(setIps).catch(() => {})
     api.adminGetPendingStocks().then(setPending).catch(() => {})
     api.adminGetDiceRooms().then(setDiceRooms).catch(() => {})
+    api.adminGetSettlementStatus().then(setSettlement).catch(() => {})
   }
   const loadTx = (filter) => {
     api.adminGetTransactions(filter || txFilter).then(setTransactions).catch(() => {})
@@ -1172,6 +1174,34 @@ function AdminPage() {
 
   return (
     <div>
+      {/* 체결 입력 현황 */}
+      {settlement && (
+        <div className="card admin-section">
+          <div className="card-title">{e('📅','')} 체결 입력 현황 ({settlement.month})</div>
+          <div style={{display:'flex',gap:16,marginBottom:12,flexWrap:'wrap'}}>
+            <span className="badge badge-green" style={{fontSize:13,padding:'4px 12px'}}>입력 완료: {settlement.entered_count}일</span>
+            <span className={`badge ${settlement.missing_count > 0 ? 'badge-red' : 'badge-green'}`} style={{fontSize:13,padding:'4px 12px'}}>미입력: {settlement.missing_count}일</span>
+            <span className="badge badge-blue" style={{fontSize:13,padding:'4px 12px'}}>전체 영업일: {settlement.total_business_days}일</span>
+          </div>
+          {settlement.missing_count > 0 && (
+            <div style={{marginBottom:12,padding:12,background:'var(--danger-bg, rgba(255,59,48,0.1))',borderRadius:8,border:'1px solid var(--danger, #ff3b30)'}}>
+              <div style={{fontSize:12,color:'var(--danger, #ff3b30)',fontWeight:600,marginBottom:6}}>미입력 날짜 ({settlement.missing_count}일):</div>
+              <div style={{fontSize:13,lineHeight:1.8}}>
+                {settlement.missing_dates.map(d => <span key={d} className="badge badge-red" style={{marginRight:4,marginBottom:4,cursor:'pointer'}} onClick={() => setPriceDate(d)}>{d}</span>)}
+              </div>
+            </div>
+          )}
+          {settlement.entered_count > 0 && (
+            <div style={{padding:12,background:'var(--surface2)',borderRadius:8}}>
+              <div style={{fontSize:12,color:'var(--text-dim)',marginBottom:6}}>입력 완료 날짜 ({settlement.entered_count}일):</div>
+              <div style={{fontSize:13,lineHeight:1.8}}>
+                {settlement.entered_dates.map(d => <span key={d} className="badge badge-green" style={{marginRight:4,marginBottom:4}}>{d}</span>)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 종가 입력 */}
       <div className="card admin-section">
         <div className="card-title">{e('📈','')} 종가 입력</div>
@@ -1405,8 +1435,8 @@ function RPSPage({ onPointsChange }) {
     const w = parseInt(wager)
     if (!w || w <= 0) return alert('배팅 포인트를 입력하세요')
     if (w > points) return alert('포인트가 부족합니다')
-    const maxWager = Math.floor(points / 2)
-    if (w > maxWager) return alert(`보유 포인트의 50%까지만 배팅할 수 있습니다 (최대 ${maxWager.toLocaleString()}P)`)
+    const maxWager = Math.max(1, Math.floor(points * 0.9))
+    if (w > maxWager) return alert(`보유 포인트의 90%까지만 배팅할 수 있습니다 (최대 ${maxWager.toLocaleString()}P)`)
     setPlaying(true)
     try {
       const res = await api.playRPS({ choice, wager: w })
@@ -1431,9 +1461,9 @@ function RPSPage({ onPointsChange }) {
         </div>
 
         <div className="form-group">
-          <div className="form-label">배팅 포인트 <span style={{fontSize:11,color:'var(--text-dim)'}}>(최대 {fmt(Math.floor(points / 2))}P)</span></div>
+          <div className="form-label">배팅 포인트 <span style={{fontSize:11,color:'var(--text-dim)'}}>(최대 {fmt(Math.max(1, Math.floor(points * 0.9)))}P)</span></div>
           <input type="number" placeholder="걸 포인트 입력" value={wager}
-            onChange={e => setWager(e.target.value)} max={Math.floor(points / 2)} style={{maxWidth:200}} />
+            onChange={e => setWager(e.target.value)} max={Math.max(1, Math.floor(points * 0.9))} style={{maxWidth:200}} />
         </div>
 
         <div className="rps-choices">
