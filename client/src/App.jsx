@@ -1466,6 +1466,13 @@ function RPSPage({ onPointsChange }) {
             onChange={e => setWager(e.target.value)} max={Math.max(1, Math.floor(points * 0.9))} style={{maxWidth:200}} />
         </div>
 
+        <div className="rps-streak-info" title="무승부는 연승에 영향 없음">
+          <span className="rps-streak-title">{e('🔥','')} 연승 보너스</span>
+          <span className="rps-streak-table">
+            2연승 +10% · 3연승 +20% · 4연승 +35% · 5연승 +50% · 6연승 +60% · 7연승+ +100%
+          </span>
+        </div>
+
         <div className="rps-choices">
           {['scissors', 'rock', 'paper'].map(c => (
             <button key={c} className="rps-choice" onClick={() => play(c)} disabled={playing}>
@@ -1476,7 +1483,14 @@ function RPSPage({ onPointsChange }) {
         </div>
 
         {result && (
-          <div className="rps-result mt-16">
+          <div className={`rps-result mt-16 ${result.win_streak >= 2 && result.result === 'win' && !isExcel() ? 'rps-streak-glow' : ''}`}>
+            {result.win_streak >= 2 && result.result === 'win' && !isExcel() && (
+              <div className="rps-streak-fire">
+                {'🔥'.repeat(Math.min(result.win_streak, 7))}
+                <span className="rps-streak-count">{result.win_streak}연승!</span>
+                {'🔥'.repeat(Math.min(result.win_streak, 7))}
+              </div>
+            )}
             <div className="rps-battle">
               <div className="rps-side">
                 <div style={{fontSize:11,color:'var(--text-dim)',marginBottom:4}}>나</div>
@@ -1491,9 +1505,26 @@ function RPSPage({ onPointsChange }) {
             <div style={{textAlign:'center',marginTop:12}}>
               <span className={`badge ${result.result === 'win' ? 'badge-green' : result.result === 'lose' ? 'badge-red' : 'badge-orange'}`}
                 style={{fontSize:14,padding:'6px 16px'}}>
-                {result.result === 'win' ? `승리! +${result.payout}P` : result.result === 'lose' ? `패배 ${result.payout}P` : '무승부'}
+                {result.result === 'win'
+                  ? result.streak_bonus > 0
+                    ? `승리! +${fmt(result.payout)}P (보너스 +${fmt(result.streak_bonus)}P)`
+                    : `승리! +${fmt(result.payout)}P`
+                  : result.result === 'lose' ? `패배 ${fmt(result.payout)}P` : '무승부'}
               </span>
             </div>
+            {result.result === 'win' && result.win_streak >= 1 && (
+              <div style={{textAlign:'center',marginTop:8,fontSize:12,color:'var(--text-dim)'}}>
+                현재 {result.win_streak}연승
+                {result.win_streak >= 2 && ` · 다음 보너스: ${
+                  result.win_streak >= 7 ? '+100%' :
+                  result.win_streak === 6 ? '+100%' :
+                  result.win_streak === 5 ? '+60%' :
+                  result.win_streak === 4 ? '+50%' :
+                  result.win_streak === 3 ? '+35%' :
+                  result.win_streak === 2 ? '+20%' : '+10%'
+                }`}
+              </div>
+            )}
           </div>
         )}
       </div>

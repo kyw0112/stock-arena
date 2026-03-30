@@ -1689,21 +1689,45 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
         if req.wager > max_wager:
             raise HTTPException(400, f"보유 포인트의 90%까지만 배팅할 수 있습니다 (최대 {max_wager}P)")
 
+        # 현재 연승 수 계산 (무승부 무시)
+        recent = await db.execute_fetchall(
+            "SELECT result FROM rps_games WHERE user_id = ? ORDER BY id DESC LIMIT 30",
+            (user["user_id"],),
+        )
+        win_streak = 0
+        for r in recent:
+            if r["result"] == "win":
+                win_streak += 1
+            elif r["result"] == "lose":
+                break
+            # draw는 무시 (연승 유지)
+
         computer = random.choice(["rock", "paper", "scissors"])
         if req.choice == computer:
             result = "draw"
             payout = 0
+            streak_bonus = 0
         elif (req.choice == "rock" and computer == "scissors") or \
              (req.choice == "paper" and computer == "rock") or \
              (req.choice == "scissors" and computer == "paper"):
             result = "win"
-            payout = req.wager
+            # 연승 보너스 (이번 판 포함이므로 win_streak = 이전 연승 수)
+            streak_rates = {1: 0, 2: 0.10, 3: 0.20, 4: 0.35, 5: 0.50, 6: 0.60}
+            # win_streak는 이전 연승 수, 이번 승리로 +1
+            new_streak = win_streak + 1
+            bonus_rate = streak_rates.get(new_streak, 1.0 if new_streak >= 7 else 0)
+            streak_bonus = int(req.wager * bonus_rate)
+            payout = req.wager + streak_bonus
         else:
             result = "lose"
             payout = -req.wager
+            streak_bonus = 0
 
         if payout != 0:
-            desc = f"가위바위보 {result} (배팅 {req.wager}P)"
+            if streak_bonus > 0:
+                desc = f"가위바위보 win (배팅 {req.wager}P + 연승보너스 {streak_bonus}P)"
+            else:
+                desc = f"가위바위보 {result} (배팅 {req.wager}P)"
             await log_point_change(db, user["user_id"], payout, "가위바위보", desc)
 
         await db.execute(
@@ -1726,11 +1750,21 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
         new_bal = await db.execute_fetchall(
             "SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],)
         )
+        # 최종 연승 수 계산
+        if result == "win":
+            final_streak = win_streak + 1
+        elif result == "lose":
+            final_streak = 0
+        else:
+            final_streak = win_streak  # draw는 유지
+
         return {
             "player_choice": req.choice,
             "computer_choice": computer,
             "result": result,
             "payout": payout,
+            "streak_bonus": streak_bonus,
+            "win_streak": final_streak,
             "new_balance": new_bal[0]["points"] if new_bal else 0,
         }
     finally:

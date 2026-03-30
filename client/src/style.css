@@ -300,9 +300,49 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .rps-choice:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .rps-emoji { font-size: 36px; margin-top: 12px; }
 .rps-label { font-size: 13px; font-weight: 600; color: var(--text); }
-.rps-result { background: var(--surface2); border-radius: 12px; padding: 20px; }
+.rps-streak-info {
+  margin-top: 12px; padding: 8px 14px; border-radius: 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+  font-size: 12px; line-height: 1.6;
+}
+.rps-streak-title { font-weight: 600; color: var(--orange); margin-right: 8px; }
+.rps-streak-table { color: var(--text-dim); }
+
+.rps-result { background: var(--surface2); border-radius: 12px; padding: 20px; position: relative; overflow: hidden; }
 .rps-battle { display: flex; justify-content: center; gap: 32px; align-items: flex-start; }
 .rps-side { display: flex; flex-direction: column; align-items: center; }
+
+/* 연승 효과 */
+.rps-streak-glow {
+  animation: streak-pulse 0.6s ease-out;
+  border: 2px solid var(--orange);
+  box-shadow: 0 0 20px rgba(245,158,11,0.3), 0 0 40px rgba(245,158,11,0.15);
+}
+@keyframes streak-pulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 rgba(245,158,11,0); }
+  50% { transform: scale(1.02); box-shadow: 0 0 30px rgba(245,158,11,0.5), 0 0 60px rgba(245,158,11,0.25); }
+  100% { transform: scale(1); box-shadow: 0 0 20px rgba(245,158,11,0.3), 0 0 40px rgba(245,158,11,0.15); }
+}
+.rps-streak-fire {
+  text-align: center; font-size: 20px; margin-bottom: 12px;
+  animation: fire-bounce 0.5s ease-out;
+}
+.rps-streak-count {
+  display: inline-block; font-size: 18px; font-weight: 800;
+  color: var(--orange); margin: 0 6px;
+  text-shadow: 0 0 12px rgba(245,158,11,0.6);
+  animation: streak-scale 0.4s ease-out 0.1s both;
+}
+@keyframes fire-bounce {
+  0% { transform: translateY(-20px); opacity: 0; }
+  60% { transform: translateY(4px); opacity: 1; }
+  100% { transform: translateY(0); }
+}
+@keyframes streak-scale {
+  0% { transform: scale(0.3); opacity: 0; }
+  60% { transform: scale(1.3); }
+  100% { transform: scale(1); opacity: 1; }
+}
 
 /* ── Modal ──────────────────────────────── */
 .modal-overlay {
