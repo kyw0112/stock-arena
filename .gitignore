@@ -1,0 +1,12 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+dist/
+.gstack/
+*.HEIC
+*.heic
+*.db
+*.sqlite
+.env
+.DS_Store
