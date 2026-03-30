@@ -1604,9 +1604,9 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
         if not bal or bal[0]["points"] < req.wager:
             raise HTTPException(400, "포인트가 부족합니다")
 
-        max_wager = bal[0]["points"] // 2
+        max_wager = max(1, int(bal[0]["points"] * 0.9))
         if req.wager > max_wager:
-            raise HTTPException(400, f"보유 포인트의 50%까지만 배팅할 수 있습니다 (최대 {max_wager}P)")
+            raise HTTPException(400, f"보유 포인트의 90%까지만 배팅할 수 있습니다 (최대 {max_wager}P)")
 
         computer = random.choice(["rock", "paper", "scissors"])
         if req.choice == computer:
