@@ -1417,15 +1417,19 @@ function RPSPage({ onPointsChange }) {
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
   const [playing, setPlaying] = useState(false)
+  const [status, setStatus] = useState(null)
+  const [showHelp, setShowHelp] = useState(false)
 
   const load = () => {
     setLoading(true)
     Promise.all([
       api.getPoints().catch(() => ({ points: 0 })),
       api.getRPSHistory().catch(() => []),
-    ]).then(([p, h]) => {
+      api.getRPSStatus().catch(() => null),
+    ]).then(([p, h, s]) => {
       setPoints(p.points)
       setHistory(h)
+      setStatus(s)
       setLoading(false)
     })
   }
@@ -1442,10 +1446,11 @@ function RPSPage({ onPointsChange }) {
       const res = await api.playRPS({ choice, wager: w })
       setResult(res)
       setPoints(res.new_balance)
+      setStatus(prev => prev ? { ...prev, jackpot_pool: res.jackpot_pool, happy_hour: res.happy_hour } : prev)
       onPointsChange?.()
       api.getRPSHistory().then(setHistory).catch(() => {})
-    } catch (e) {
-      alert(e.message)
+    } catch (err) {
+      alert(err.message)
     }
     setPlaying(false)
   }
@@ -1456,21 +1461,57 @@ function RPSPage({ onPointsChange }) {
     <div>
       <div className="card mb-16">
         <div className="flex-between mb-16">
-          <div className="card-title" style={{margin:0}}>가위바위보</div>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <div className="card-title" style={{margin:0}}>가위바위보</div>
+            <button className="rps-help-btn" onClick={() => setShowHelp(!showHelp)} title="게임 규칙">?</button>
+          </div>
           <span className="badge badge-orange" style={{fontSize:13,padding:'4px 12px'}}>{e('🎲','[P]')} {fmt(points)} P</span>
         </div>
 
-        <div className="form-group">
-          <div className="form-label">배팅 포인트 <span style={{fontSize:11,color:'var(--text-dim)'}}>(최대 {fmt(Math.max(1, Math.floor(points * 0.9)))}P)</span></div>
-          <input type="number" placeholder="걸 포인트 입력" value={wager}
-            onChange={e => setWager(e.target.value)} max={Math.max(1, Math.floor(points * 0.9))} style={{maxWidth:200}} />
+        {/* 상태 배너: 해피아워 + 잭팟 */}
+        <div className="rps-status-bar">
+          <div className="rps-jackpot">
+            {e('🎰','')} 잭팟 풀: <strong>{fmt(status?.jackpot_pool || 0)}P</strong>
+          </div>
+          {status?.happy_hour && (
+            <div className="rps-happy-hour">
+              {e('⚡','')} 해피아워! 수익 1.5배
+            </div>
+          )}
+          {status && !status.happy_hour && status.happy_hour_start && (
+            <div style={{fontSize:11,color:'var(--text-dim)'}}>
+              해피아워: {status.happy_hour_start?.slice(11,16)}~{status.happy_hour_end?.slice(11,16)}
+            </div>
+          )}
         </div>
 
-        <div className="rps-streak-info" title="무승부는 연승에 영향 없음">
-          <span className="rps-streak-title">{e('🔥','')} 연승 보너스</span>
-          <span className="rps-streak-table">
-            2연승 +10% · 3연승 +20% · 4연승 +35% · 5연승 +50% · 6연승 +60% · 7연승+ +100%
-          </span>
+        {/* 도움말 팝업 */}
+        {showHelp && (
+          <div className="rps-help-popup">
+            <div className="rps-help-section">
+              <strong>기본 규칙</strong>
+              <p>배당 1.98배 (승리 시 배팅금의 98% 수익). 배팅금의 7%는 잭팟 풀에 적립.</p>
+            </div>
+            <div className="rps-help-section">
+              <strong>{e('🔥','')} 연승 보너스</strong> <span style={{color:'var(--text-dim)'}}>(무승부는 연승 유지)</span>
+              <p>2연승 +10% · 3연승 +20% · 4연승 +35% · 5연승 +50% · 6연승 +60% · 7연승+ +100%</p>
+            </div>
+            <div className="rps-help-section">
+              <strong>{e('🎰','')} 잭팟</strong>
+              <p>모든 배팅금의 7%가 잭팟 풀에 쌓임. 100P 이상 배팅 시 추첨 참여 (승패 무관).</p>
+              <p>100~199P: 0.8% · 200~499P: 1.6% · 500P+: 2.5%</p>
+            </div>
+            <div className="rps-help-section">
+              <strong>{e('⚡','')} 해피아워</strong>
+              <p>매일 랜덤 1시간. 모든 승리 수익 1.5배!</p>
+            </div>
+          </div>
+        )}
+
+        <div className="form-group">
+          <div className="form-label">배팅 포인트 <span style={{fontSize:11,color:'var(--text-dim)'}}>(최대 {fmt(Math.max(1, Math.floor(points * 0.9)))}P · 배당 1.98배{status?.happy_hour ? ' · ⚡해피아워 1.5배' : ''})</span></div>
+          <input type="number" placeholder="걸 포인트 입력" value={wager}
+            onChange={e => setWager(e.target.value)} max={Math.max(1, Math.floor(points * 0.9))} style={{maxWidth:200}} />
         </div>
 
         <div className="rps-choices">
@@ -1483,7 +1524,14 @@ function RPSPage({ onPointsChange }) {
         </div>
 
         {result && (
-          <div className={`rps-result mt-16 ${result.win_streak >= 2 && result.result === 'win' && !isExcel() ? 'rps-streak-glow' : ''}`}>
+          <div className={`rps-result mt-16 ${result.win_streak >= 2 && result.result === 'win' && !isExcel() ? 'rps-streak-glow' : ''} ${result.jackpot_win > 0 && !isExcel() ? 'rps-jackpot-glow' : ''}`}>
+            {/* 잭팟 당첨 */}
+            {result.jackpot_win > 0 && !isExcel() && (
+              <div className="rps-jackpot-banner">
+                {e('🎰','')} JACKPOT! +{fmt(result.jackpot_win)}P {e('🎰','')}
+              </div>
+            )}
+            {/* 연승 불꽃 */}
             {result.win_streak >= 2 && result.result === 'win' && !isExcel() && (
               <div className="rps-streak-fire">
                 {'🔥'.repeat(Math.min(result.win_streak, 7))}
@@ -1506,23 +1554,17 @@ function RPSPage({ onPointsChange }) {
               <span className={`badge ${result.result === 'win' ? 'badge-green' : result.result === 'lose' ? 'badge-red' : 'badge-orange'}`}
                 style={{fontSize:14,padding:'6px 16px'}}>
                 {result.result === 'win'
-                  ? result.streak_bonus > 0
-                    ? `승리! +${fmt(result.payout)}P (보너스 +${fmt(result.streak_bonus)}P)`
-                    : `승리! +${fmt(result.payout)}P`
+                  ? `승리! +${fmt(result.payout)}P${result.streak_bonus > 0 ? ` (연승 +${fmt(result.streak_bonus)})` : ''}${result.happy_bonus > 0 ? ` (해피 +${fmt(result.happy_bonus)})` : ''}`
                   : result.result === 'lose' ? `패배 ${fmt(result.payout)}P` : '무승부'}
               </span>
             </div>
             {result.result === 'win' && result.win_streak >= 1 && (
               <div style={{textAlign:'center',marginTop:8,fontSize:12,color:'var(--text-dim)'}}>
                 현재 {result.win_streak}연승
-                {result.win_streak >= 2 && ` · 다음 보너스: ${
-                  result.win_streak >= 7 ? '+100%' :
-                  result.win_streak === 6 ? '+100%' :
-                  result.win_streak === 5 ? '+60%' :
-                  result.win_streak === 4 ? '+50%' :
-                  result.win_streak === 3 ? '+35%' :
-                  result.win_streak === 2 ? '+20%' : '+10%'
+                {result.win_streak >= 1 && result.win_streak < 7 && ` · 다음 보너스: ${
+                  {1:'+10%',2:'+20%',3:'+35%',4:'+50%',5:'+60%',6:'+100%'}[result.win_streak] || ''
                 }`}
+                {result.win_streak >= 7 && ' · 최대 보너스 +100% 유지'}
               </div>
             )}
           </div>
@@ -2689,11 +2731,11 @@ export default function App() {
             try {
               const r = await api.claimDailyFree();
               setUserPoints(r.points);
-              showToast('무료 충전! +200P');
-            } catch (e) {
-              showToast(e.message, 'error');
+              showToast(`출석 룰렛! +${r.reward}P ${r.reward >= 1000 ? '🎉 대박!' : ''}`);
+            } catch (err) {
+              showToast(err.message, 'error');
             }
-          }}>무료 200P</button>
+          }}>{e('🎡','')} 출석룰렛</button>
           <button className="btn-chat-toggle" onClick={toggleChatHidden} title={chatHidden ? '채팅 켜기' : '채팅 끄기'}>
             {chatHidden ? `${e('💬','')} OFF` : `${e('💬','')} ON`}
           </button>

@@ -349,6 +349,21 @@ CREATE TABLE IF NOT EXISTS nordle_games (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+-- 잭팟 풀
+CREATE TABLE IF NOT EXISTS jackpot_pool (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    amount INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO jackpot_pool (id, amount) VALUES (1, 0);
+
+-- 해피아워
+CREATE TABLE IF NOT EXISTS happy_hour (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    start_time TEXT,
+    end_time TEXT
+);
+INSERT OR IGNORE INTO happy_hour (id) VALUES (1);
+
 -- 배지 (닭대가리 등)
 CREATE TABLE IF NOT EXISTS user_badges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

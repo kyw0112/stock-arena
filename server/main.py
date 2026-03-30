@@ -1406,9 +1406,17 @@ async def get_points(user=Depends(get_current_user)):
         await db.close()
 
 
+ROULETTE_TABLE = [
+    (3000, 0.02),   # 3000P: 2%
+    (1000, 0.08),   # 1000P: 8%
+    (200, 0.30),    # 200P: 30%
+    (100, 0.40),    # 100P: 40%
+    (50, 0.20),     # 50P: 20%
+]
+
 @app.post("/api/points/daily-free")
 async def daily_free_charge(user=Depends(get_current_user)):
-    """일일 무료 200P 충전 (하루 1회)"""
+    """일일 출석 룰렛"""
     db = await get_db()
     try:
         today = dt.now().strftime("%Y-%m-%d")
@@ -1417,16 +1425,26 @@ async def daily_free_charge(user=Depends(get_current_user)):
             (user["user_id"], today)
         )
         if rows and rows[0]["count"] > 0:
-            raise HTTPException(400, "오늘 이미 무료 충전을 받았습니다")
+            raise HTTPException(400, "오늘 이미 룰렛을 돌렸습니다")
+
+        # 룰렛 추첨
+        roll = random.random()
+        cumulative = 0
+        reward = 50  # 기본값
+        for amount, prob in ROULETTE_TABLE:
+            cumulative += prob
+            if roll < cumulative:
+                reward = amount
+                break
 
         await db.execute(
             "INSERT INTO daily_activity (user_id, date, activity_type, count) VALUES (?, ?, 'free_charge', 1) "
             "ON CONFLICT(user_id, date, activity_type) DO UPDATE SET count = count + 1",
             (user["user_id"], today)
         )
-        new_balance = await log_point_change(db, user["user_id"], 200, "무료 충전", "일일 무료 200P 충전")
+        new_balance = await log_point_change(db, user["user_id"], reward, "출석 룰렛", f"출석 룰렛 {reward}P")
         await db.commit()
-        return {"message": "무료 200P 충전 완료!", "points": new_balance}
+        return {"reward": reward, "points": new_balance}
     finally:
         await db.close()
 
@@ -1670,6 +1688,64 @@ async def point_leaderboard(user=Depends(get_current_user)):
 # RPS (가위바위보)
 # ═══════════════════════════════════════════════
 
+RPS_BASE_RATE = 0.98  # 1.98배 배당 (승리 시 배팅금 × 0.98 수익)
+RPS_HAPPY_MULTIPLIER = 1.5  # 해피아워 시 수익 1.5배
+RPS_JACKPOT_RAKE = 0.07  # 배팅금의 7%가 잭팟 풀로
+
+JACKPOT_CHANCES = [
+    (500, 0.025),  # 500P 이상: 2.5%
+    (200, 0.016),  # 200~499P: 1.6%
+    (100, 0.008),  # 100~199P: 0.8%
+]
+
+
+async def is_happy_hour(db) -> bool:
+    row = await db.execute_fetchall("SELECT start_time, end_time FROM happy_hour WHERE id = 1")
+    if not row or not row[0]["start_time"]:
+        return False
+    now = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    return row[0]["start_time"] <= now <= row[0]["end_time"]
+
+
+async def maybe_start_happy_hour(db):
+    """매일 랜덤 1시간 해피아워 자동 설정"""
+    row = await db.execute_fetchall("SELECT end_time FROM happy_hour WHERE id = 1")
+    today = dt.now().strftime("%Y-%m-%d")
+    # 오늘치 이미 있으면 스킵
+    if row and row[0]["end_time"] and row[0]["end_time"][:10] == today:
+        return
+    # 오늘 랜덤 시각 (9시~21시)
+    hour = random.randint(9, 20)
+    minute = random.randint(0, 59)
+    start = dt.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+    end = start + timedelta(hours=1)
+    await db.execute(
+        "UPDATE happy_hour SET start_time = ?, end_time = ? WHERE id = 1",
+        (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    await db.commit()
+    await insert_ticker(db, f"⚡ 오늘 해피아워: {start.strftime('%H:%M')}~{end.strftime('%H:%M')} (가위바위보 수익 1.5배!)", "happy_hour")
+
+
+@app.get("/api/rps/status")
+async def rps_status(user=Depends(get_current_user)):
+    """잭팟 풀 + 해피아워 상태"""
+    db = await get_db()
+    try:
+        await maybe_start_happy_hour(db)
+        jp = await db.execute_fetchall("SELECT amount FROM jackpot_pool WHERE id = 1")
+        hh = await db.execute_fetchall("SELECT start_time, end_time FROM happy_hour WHERE id = 1")
+        happy = await is_happy_hour(db)
+        return {
+            "jackpot_pool": jp[0]["amount"] if jp else 0,
+            "happy_hour": happy,
+            "happy_hour_start": hh[0]["start_time"] if hh and hh[0]["start_time"] else None,
+            "happy_hour_end": hh[0]["end_time"] if hh and hh[0]["end_time"] else None,
+        }
+    finally:
+        await db.close()
+
+
 @app.post("/api/rps/play")
 async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
     if req.choice not in ("rock", "paper", "scissors"):
@@ -1689,6 +1765,14 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
         if req.wager > max_wager:
             raise HTTPException(400, f"보유 포인트의 90%까지만 배팅할 수 있습니다 (최대 {max_wager}P)")
 
+        # 해피아워 체크
+        await maybe_start_happy_hour(db)
+        happy = await is_happy_hour(db)
+
+        # 잭팟 풀 적립 (7%)
+        rake = max(1, int(req.wager * RPS_JACKPOT_RAKE))
+        await db.execute("UPDATE jackpot_pool SET amount = amount + ? WHERE id = 1", (rake,))
+
         # 현재 연승 수 계산 (무승부 무시)
         recent = await db.execute_fetchall(
             "SELECT result FROM rps_games WHERE user_id = ? ORDER BY id DESC LIMIT 30",
@@ -1700,35 +1784,64 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
                 win_streak += 1
             elif r["result"] == "lose":
                 break
-            # draw는 무시 (연승 유지)
 
         computer = random.choice(["rock", "paper", "scissors"])
+        jackpot_win = 0
         if req.choice == computer:
             result = "draw"
             payout = 0
             streak_bonus = 0
+            happy_bonus = 0
         elif (req.choice == "rock" and computer == "scissors") or \
              (req.choice == "paper" and computer == "rock") or \
              (req.choice == "scissors" and computer == "paper"):
             result = "win"
-            # 연승 보너스 (이번 판 포함이므로 win_streak = 이전 연승 수)
-            streak_rates = {1: 0, 2: 0.10, 3: 0.20, 4: 0.35, 5: 0.50, 6: 0.60}
-            # win_streak는 이전 연승 수, 이번 승리로 +1
+            base_payout = int(req.wager * RPS_BASE_RATE)
+            # 연승 보너스
             new_streak = win_streak + 1
+            streak_rates = {1: 0, 2: 0.10, 3: 0.20, 4: 0.35, 5: 0.50, 6: 0.60}
             bonus_rate = streak_rates.get(new_streak, 1.0 if new_streak >= 7 else 0)
             streak_bonus = int(req.wager * bonus_rate)
-            payout = req.wager + streak_bonus
+            # 해피아워 보너스
+            subtotal = base_payout + streak_bonus
+            happy_bonus = int(subtotal * (RPS_HAPPY_MULTIPLIER - 1)) if happy else 0
+            payout = subtotal + happy_bonus
         else:
             result = "lose"
             payout = -req.wager
             streak_bonus = 0
+            happy_bonus = 0
 
         if payout != 0:
-            if streak_bonus > 0:
-                desc = f"가위바위보 win (배팅 {req.wager}P + 연승보너스 {streak_bonus}P)"
+            parts = []
+            if result == "win":
+                parts.append(f"배팅 {req.wager}P → +{payout}P")
+                if streak_bonus > 0:
+                    parts.append(f"연승 +{streak_bonus}P")
+                if happy_bonus > 0:
+                    parts.append(f"해피아워 +{happy_bonus}P")
             else:
-                desc = f"가위바위보 {result} (배팅 {req.wager}P)"
+                parts.append(f"배팅 {req.wager}P")
+            desc = f"가위바위보 {result} ({', '.join(parts)})"
             await log_point_change(db, user["user_id"], payout, "가위바위보", desc)
+
+        # 잭팟 추첨 (승패 무관, 100P 이상 배팅만)
+        jackpot_chance = 0
+        for threshold, chance in JACKPOT_CHANCES:
+            if req.wager >= threshold:
+                jackpot_chance = chance
+                break
+        if jackpot_chance > 0 and random.random() < jackpot_chance:
+            jp_row = await db.execute_fetchall("SELECT amount FROM jackpot_pool WHERE id = 1")
+            jp_amount = jp_row[0]["amount"] if jp_row else 0
+            if jp_amount >= 100:
+                jackpot_win = jp_amount
+                await db.execute("UPDATE jackpot_pool SET amount = 0 WHERE id = 1")
+                await log_point_change(db, user["user_id"], jackpot_win, "잭팟", f"가위바위보 잭팟 당첨! {jackpot_win}P")
+                nick_row = await db.execute_fetchall("SELECT nickname FROM users WHERE id = ?", (user["user_id"],))
+                nickname = nick_row[0]["nickname"] if nick_row else "???"
+                await insert_system_message(db, f"🎰 {nickname}님이 잭팟 {jackpot_win:,}P 당첨!!")
+                await insert_ticker(db, f"🎰 {nickname}님 가위바위보 잭팟 {jackpot_win:,}P 대박!", "jackpot")
 
         await db.execute(
             """INSERT INTO rps_games (user_id, player_choice, computer_choice, result, wager, payout)
@@ -1737,12 +1850,13 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
         )
 
         # 채팅 시스템 메시지 (주목할 만한 이벤트)
-        nick_row = await db.execute_fetchall(
-            "SELECT nickname FROM users WHERE id = ?", (user["user_id"],)
-        )
-        nickname = nick_row[0]["nickname"] if nick_row else "???"
-        await check_rps_notable_event(db, user["user_id"], nickname, result, req.wager, payout)
-        if abs(payout) >= 300:
+        if not jackpot_win:  # 잭팟 메시지가 이미 있으면 중복 방지
+            nick_row = await db.execute_fetchall(
+                "SELECT nickname FROM users WHERE id = ?", (user["user_id"],)
+            )
+            nickname = nick_row[0]["nickname"] if nick_row else "???"
+            await check_rps_notable_event(db, user["user_id"], nickname, result, req.wager, payout)
+        if abs(payout) >= 300 or jackpot_win:
             await check_point_leader_change(db)
 
         await db.commit()
@@ -1750,13 +1864,8 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
         new_bal = await db.execute_fetchall(
             "SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],)
         )
-        # 최종 연승 수 계산
-        if result == "win":
-            final_streak = win_streak + 1
-        elif result == "lose":
-            final_streak = 0
-        else:
-            final_streak = win_streak  # draw는 유지
+        final_streak = (win_streak + 1) if result == "win" else (0 if result == "lose" else win_streak)
+        jp_after = await db.execute_fetchall("SELECT amount FROM jackpot_pool WHERE id = 1")
 
         return {
             "player_choice": req.choice,
@@ -1764,6 +1873,10 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
             "result": result,
             "payout": payout,
             "streak_bonus": streak_bonus,
+            "happy_bonus": happy_bonus,
+            "happy_hour": happy,
+            "jackpot_win": jackpot_win,
+            "jackpot_pool": jp_after[0]["amount"] if jp_after else 0,
             "win_streak": final_streak,
             "new_balance": new_bal[0]["points"] if new_bal else 0,
         }

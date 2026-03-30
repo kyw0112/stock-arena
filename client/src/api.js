@@ -95,6 +95,7 @@ export const claimRelief = () => request('/points/relief', { method: 'POST' });
 // RPS (가위바위보)
 export const playRPS = (data) => request('/rps/play', { method: 'POST', body: JSON.stringify(data) });
 export const getRPSHistory = () => request('/rps/history');
+export const getRPSStatus = () => request('/rps/status');
 
 // Point Gift
 export const sendPointGift = (data) => request('/points/gift', { method: 'POST', body: JSON.stringify(data) });
