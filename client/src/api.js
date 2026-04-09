@@ -128,6 +128,14 @@ export const getDiceHistory = () => request('/dice/history');
 // Chat (채팅)
 export const getChatMessages = (afterId = 0) => request(`/chat/messages?after_id=${afterId}`);
 export const sendChatMessage = (message) => request('/chat/send', { method: 'POST', body: JSON.stringify({ message }) });
+export const adminClearChat = () => request('/admin/chat/clear', { method: 'DELETE' });
+export const adminDeleteChatMessage = (msgId) => request(`/admin/chat/${msgId}`, { method: 'DELETE' });
+
+// Lotto (로또)
+export const getLottoStatus = () => request('/lotto/status');
+export const pickLottoNumbers = (numbers) => request('/lotto/pick', { method: 'POST', body: JSON.stringify({ numbers }) });
+export const deleteLottoPick = (number) => request(`/lotto/pick/${number}`, { method: 'DELETE' });
+export const getLottoHistory = () => request('/lotto/history');
 
 // Ticker (전광판)
 export const getTickerMessages = () => request('/ticker/messages');
@@ -138,6 +146,36 @@ export const buyChicken = (targetNickname) => request('/shop/chicken', { method:
 export const removeChicken = () => request('/shop/remove-chicken', { method: 'POST' });
 export const getMyBadge = () => request('/badge/me');
 export const getUsersList = () => request('/users/list');
+
+// Omok (오목)
+export const getOmokRooms = () => request('/omok/rooms');
+export const createOmokRoom = (data) => request('/omok/rooms', { method: 'POST', body: JSON.stringify(data) });
+export const getOmokRoom = (id) => request(`/omok/rooms/${id}`);
+export const joinOmokRoom = (id) => request(`/omok/rooms/${id}/join`, { method: 'POST' });
+export const omokMove = (id, data) => request(`/omok/rooms/${id}/move`, { method: 'POST', body: JSON.stringify(data) });
+export const omokResign = (id) => request(`/omok/rooms/${id}/resign`, { method: 'POST' });
+export const omokUndoRequest = (id) => request(`/omok/rooms/${id}/undo_request`, { method: 'POST' });
+export const omokUndoResponse = (id, data) => request(`/omok/rooms/${id}/undo_response`, { method: 'POST', body: JSON.stringify(data) });
+export const cancelOmokRoom = (id) => request(`/omok/rooms/${id}/cancel`, { method: 'POST' });
+export const omokRematch = (id) => request(`/omok/rooms/${id}/rematch`, { method: 'POST' });
+export const getOmokHistory = () => request('/omok/history');
+
+// Chess (체스)
+export const getChessRooms = () => request('/chess/rooms');
+export const createChessRoom = (data) => request('/chess/rooms', { method: 'POST', body: JSON.stringify(data) });
+export const getChessRoom = (id) => request(`/chess/rooms/${id}`);
+export const joinChessRoom = (id) => request(`/chess/rooms/${id}/join`, { method: 'POST' });
+export const chessMove = (id, data) => request(`/chess/rooms/${id}/move`, { method: 'POST', body: JSON.stringify(data) });
+export const chessResign = (id) => request(`/chess/rooms/${id}/resign`, { method: 'POST' });
+export const chessUndoRequest = (id) => request(`/chess/rooms/${id}/undo_request`, { method: 'POST' });
+export const chessUndoResponse = (id, data) => request(`/chess/rooms/${id}/undo_response`, { method: 'POST', body: JSON.stringify(data) });
+export const cancelChessRoom = (id) => request(`/chess/rooms/${id}/cancel`, { method: 'POST' });
+export const chessRematch = (id) => request(`/chess/rooms/${id}/rematch`, { method: 'POST' });
+export const getChessHistory = () => request('/chess/history');
+
+// MMR & Leaderboard
+export const getMmrLeaderboard = (gameType = 'omok') => request(`/mmr/leaderboard?game_type=${gameType}`);
+export const getMyMmr = () => request('/mmr/me');
 
 // Admin
 export const adminGetUsers = () => request('/admin/users');
@@ -160,3 +198,17 @@ export const adminGetTransactions = (params = {}) => {
 export const adminGetSettlementStatus = () => request('/admin/settlement-status');
 export const adminGetDiceRooms = () => request('/admin/dice/rooms');
 export const adminDestroyDiceRoom = (id) => request(`/admin/dice/rooms/${id}/destroy`, { method: 'POST' });
+export const adminGetOmokRooms = () => request('/admin/omok/rooms');
+export const adminDestroyOmokRoom = (id) => request(`/admin/omok/rooms/${id}/destroy`, { method: 'POST' });
+export const adminGetChessRooms = () => request('/admin/chess/rooms');
+export const adminDestroyChessRoom = (id) => request(`/admin/chess/rooms/${id}/destroy`, { method: 'POST' });
+export const adminResetAllPoints = () => request('/admin/points/reset-all', { method: 'POST' });
+export const adminGiveWeeklyRewards = (type = 'all') => request(`/admin/weekly-rewards?reward_type=${type}`, { method: 'POST' });
+
+// Spectator Betting (관전 배팅)
+export const placeSpectatorBet = (gameType, roomId, data) => request(`/spectator-bet/${gameType}/${roomId}`, { method: 'POST', body: JSON.stringify(data) });
+export const getSpectatorBets = (gameType, roomId) => request(`/spectator-bet/${gameType}/${roomId}`);
+
+// Weekly Leaderboards (주간 리더보드)
+export const getWeeklyOmokLeaderboard = () => request('/weekly/omok-leaderboard');
+export const getWeeklyNordleLeaderboard = () => request('/weekly/nordle-leaderboard');

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import * as api from './api'
 
 // ── Helpers ───────────────────────────────────
-const VALID_TABS = ['dashboard', 'trade', 'rankings', 'board', 'picks', 'betting', 'rps', 'dice', 'gacha', 'nordle', 'shop', 'admin']
+const VALID_TABS = ['dashboard', 'trade', 'rankings', 'board', 'picks', 'betting', 'rps', 'dice', 'gacha', 'nordle', 'omok', 'chess', 'shop', 'admin']
 const getTabFromHash = () => {
   const h = window.location.hash.replace('#', '')
   return VALID_TABS.includes(h) ? h : 'dashboard'
@@ -705,7 +705,14 @@ function NordlePage() {
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [showWeekly, setShowWeekly] = useState(false)
+  const [weeklyData, setWeeklyData] = useState(null)
   const user = api.getUser()
+  const currentUser = api.getUser()
+
+  const loadWeekly = async () => {
+    try { const data = await api.getWeeklyNordleLeaderboard(); setWeeklyData(data); setShowWeekly(true) } catch (e) { alert(e.message) }
+  }
 
   const loadAll = useCallback(() => {
     let cancelled = false
@@ -855,7 +862,10 @@ function NordlePage() {
 
       {/* 리더보드 */}
       <div className="card">
-        <div className="card-title">오늘의 노들 랭킹</div>
+        <div className="flex-between mb-8">
+          <div className="card-title" style={{margin:0}}>오늘의 노들 랭킹</div>
+          <button className="btn btn-ghost btn-sm" onClick={loadWeekly}>{e('📅','')} 주간</button>
+        </div>
         {leaderboard.length > 0 ? (
           <div className="table-wrap">
             <table>
@@ -889,6 +899,43 @@ function NordlePage() {
           </div>
         ) : <div className="empty">아직 오늘 참여자가 없습니다</div>}
       </div>
+
+      {/* 주간 리더보드 모달 */}
+      {showWeekly && weeklyData && (
+        <div className="modal-overlay" onClick={() => setShowWeekly(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="flex-between mb-16">
+              <h3 style={{margin:0}}>{e('📅','')} 노들 주간 리더보드</h3>
+              <button className="btn btn-ghost" onClick={() => setShowWeekly(false)}>✕</button>
+            </div>
+            <div style={{fontSize:12,color:'var(--text-dim)',marginBottom:12}}>
+              {weeklyData.week_start} ~ {weeklyData.week_end}
+              {weeklyData.rewarded && <span className="badge badge-green" style={{marginLeft:8}}>보상 지급 완료</span>}
+            </div>
+            <div style={{fontSize:12,color:'var(--accent-orange)',marginBottom:12}}>
+              주간 보상: 1등 3,000P / 2등 2,000P / 3등 1,000P (풀이 수 기준)
+            </div>
+            {weeklyData.leaderboard.length > 0 ? (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>#</th><th>닉네임</th><th>풀이 수</th><th>평균 시도</th><th>최소 시도</th></tr></thead>
+                  <tbody>
+                    {weeklyData.leaderboard.map((r, i) => (
+                      <tr key={r.user_id} className={r.user_id === currentUser?.user_id ? 'highlight-row' : ''}>
+                        <td className={rankClass(i+1)}>{i+1} {i < 3 ? ['🥇','🥈','🥉'][i] : ''}</td>
+                        <td>{r.nickname}</td>
+                        <td className="text-center"><strong>{r.solved_count}</strong></td>
+                        <td className="text-center mono">{r.avg_attempts}</td>
+                        <td className="text-center mono">{r.best_attempts}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <div className="empty">이번 주 풀이 기록이 없습니다</div>}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1084,6 +1131,8 @@ function AdminPage() {
   const [transactions, setTransactions] = useState({ transactions: [], total: 0, page: 1, pages: 0 })
   const [txFilter, setTxFilter] = useState({ user_id: '', source: '', page: 1 })
   const [diceRooms, setDiceRooms] = useState([])
+  const [omokRooms, setOmokRooms] = useState([])
+  const [chessRooms, setChessRooms] = useState([])
   const [settlement, setSettlement] = useState(null)
 
   const load = () => {
@@ -1091,6 +1140,8 @@ function AdminPage() {
     api.adminGetIPs().then(setIps).catch(() => {})
     api.adminGetPendingStocks().then(setPending).catch(() => {})
     api.adminGetDiceRooms().then(setDiceRooms).catch(() => {})
+    api.adminGetOmokRooms().then(setOmokRooms).catch(() => {})
+    api.adminGetChessRooms().then(setChessRooms).catch(() => {})
     api.adminGetSettlementStatus().then(setSettlement).catch(() => {})
   }
   const loadTx = (filter) => {
@@ -1154,6 +1205,24 @@ function AdminPage() {
     if (!confirm(`방 #${roomId}을 폭파하시겠습니까? 참가자들에게 참가비가 환불됩니다.`)) return
     try {
       const res = await api.adminDestroyDiceRoom(roomId)
+      setMsg(`${e('✅','[OK]')}${res.message}`)
+      load()
+    } catch (err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) }
+  }
+
+  const handleDestroyOmokRoom = async (roomId) => {
+    if (!confirm(`오목 방 #${roomId}을 강제 종료하시겠습니까? 베팅금이 환불됩니다.`)) return
+    try {
+      const res = await api.adminDestroyOmokRoom(roomId)
+      setMsg(`${e('✅','[OK]')}${res.message}`)
+      load()
+    } catch (err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) }
+  }
+
+  const handleDestroyChessRoom = async (roomId) => {
+    if (!confirm(`체스 방 #${roomId}을 강제 종료하시겠습니까? 베팅금이 환불됩니다.`)) return
+    try {
+      const res = await api.adminDestroyChessRoom(roomId)
       setMsg(`${e('✅','[OK]')}${res.message}`)
       load()
     } catch (err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) }
@@ -1301,6 +1370,88 @@ function AdminPage() {
         </div>
       </div>
 
+      {/* 전체 포인트 초기화 */}
+      <div className="card admin-section">
+        <div className="card-title">{e('💰','')} 전체 포인트 초기화</div>
+        <p style={{fontSize:13,color:'var(--text-dim)',marginBottom:12}}>모든 유저의 포인트를 10,000P로 초기화합니다.</p>
+        <button className="btn btn-danger" onClick={async () => { if(confirm('전체 유저의 포인트를 10,000P로 초기화합니다. 정말 진행하시겠습니까?')) { try { const r = await api.adminResetAllPoints(); setMsg(`${e('✅','[OK]')} ${r.message}`) } catch(err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) } } }}>전체 포인트 10,000P 초기화</button>
+      </div>
+
+      {/* 주간 보상 */}
+      <div className="card admin-section">
+        <div className="card-title">{e('🏆','')} 주간 보상 지급</div>
+        <p style={{fontSize:13,color:'var(--text-dim)',marginBottom:12}}>오목 MMR 상위 3명, 노들 주간 상위 3명에게 보상을 지급합니다. (1등 3,000P / 2등 2,000P / 3등 1,000P)</p>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn btn-primary" onClick={async () => { try { const r = await api.adminGiveWeeklyRewards('all'); setMsg(`${e('✅','[OK]')} ${r.message}`) } catch(err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) } }}>전체 주간 보상</button>
+          <button className="btn btn-ghost" onClick={async () => { try { const r = await api.adminGiveWeeklyRewards('omok'); setMsg(`${e('✅','[OK]')} ${r.message}`) } catch(err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) } }}>오목만</button>
+          <button className="btn btn-ghost" onClick={async () => { try { const r = await api.adminGiveWeeklyRewards('nordle'); setMsg(`${e('✅','[OK]')} ${r.message}`) } catch(err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) } }}>노들만</button>
+        </div>
+      </div>
+
+      {/* 채팅 관리 */}
+      <div className="card admin-section">
+        <div className="card-title">{e('💬','')} 채팅 관리</div>
+        <button className="btn btn-danger" onClick={async () => { if(confirm('채팅 내역을 전부 초기화합니다. 진행하시겠습니까?')) { try { const r = await api.adminClearChat(); setMsg(`${e('✅','[OK]')} ${r.message}`) } catch(err) { setMsg(`${e('❌','[ERR]')} ${err.message}`) } } }}>채팅 전체 초기화</button>
+      </div>
+
+      {/* 오목 방 관리 */}
+      <div className="card admin-section">
+        <div className="card-title">{e('⚫','')} 오목 방 관리</div>
+        {omokRooms.length === 0 ? (
+          <p style={{fontSize:13,color:'var(--text-dim)'}}>진행 중인 방이 없습니다.</p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>방장</th><th>상대</th><th>베팅</th><th>수</th><th>상태</th><th></th></tr></thead>
+              <tbody>
+                {omokRooms.map(r => (
+                  <tr key={r.id}>
+                    <td className="mono">{r.id}</td>
+                    <td>{r.creator_name}</td>
+                    <td>{r.opponent_name || <span style={{color:'var(--text-dim)'}}>대기중</span>}</td>
+                    <td className="mono">{r.bet_amount.toLocaleString()}P</td>
+                    <td className="text-center">{r.move_count}</td>
+                    <td><span className={`badge ${r.status === 'PLAYING' ? 'badge-orange' : 'badge-green'}`}>{r.status === 'PLAYING' ? '진행중' : '대기중'}</span></td>
+                    <td className="text-right">
+                      <button className="btn btn-danger btn-sm" onClick={() => handleDestroyOmokRoom(r.id)}>강제종료</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* 체스 방 관리 */}
+      <div className="card admin-section">
+        <div className="card-title">{e('♟','')} 체스 방 관리</div>
+        {chessRooms.length === 0 ? (
+          <p style={{fontSize:13,color:'var(--text-dim)'}}>진행 중인 방이 없습니다.</p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>방장</th><th>상대</th><th>베팅</th><th>수</th><th>상태</th><th></th></tr></thead>
+              <tbody>
+                {chessRooms.map(r => (
+                  <tr key={r.id}>
+                    <td className="mono">{r.id}</td>
+                    <td>{r.creator_name}</td>
+                    <td>{r.opponent_name || <span style={{color:'var(--text-dim)'}}>대기중</span>}</td>
+                    <td className="mono">{r.bet_amount.toLocaleString()}P</td>
+                    <td className="text-center">{r.move_count}</td>
+                    <td><span className={`badge ${r.status === 'PLAYING' ? 'badge-orange' : 'badge-green'}`}>{r.status === 'PLAYING' ? '진행중' : '대기중'}</span></td>
+                    <td className="text-right">
+                      <button className="btn btn-danger btn-sm" onClick={() => handleDestroyChessRoom(r.id)}>강제종료</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* 주사위 방 관리 */}
       <div className="card admin-section">
         <div className="card-title">{e('🎲','')} 주사위 방 관리</div>
@@ -1446,7 +1597,7 @@ function RPSPage({ onPointsChange }) {
       const res = await api.playRPS({ choice, wager: w })
       setResult(res)
       setPoints(res.new_balance)
-      setStatus(prev => prev ? { ...prev, jackpot_pool: res.jackpot_pool, happy_hour: res.happy_hour } : prev)
+      setStatus(prev => prev ? { ...prev, jackpot_pool: res.jackpot_pool } : prev)
       onPointsChange?.()
       api.getRPSHistory().then(setHistory).catch(() => {})
     } catch (err) {
@@ -1468,21 +1619,11 @@ function RPSPage({ onPointsChange }) {
           <span className="badge badge-orange" style={{fontSize:13,padding:'4px 12px'}}>{e('🎲','[P]')} {fmt(points)} P</span>
         </div>
 
-        {/* 상태 배너: 해피아워 + 잭팟 */}
+        {/* 상태 배너: 잭팟 */}
         <div className="rps-status-bar">
           <div className="rps-jackpot">
             {e('🎰','')} 잭팟 풀: <strong>{fmt(status?.jackpot_pool || 0)}P</strong>
           </div>
-          {status?.happy_hour && (
-            <div className="rps-happy-hour">
-              {e('⚡','')} 해피아워! 수익 1.5배
-            </div>
-          )}
-          {status && !status.happy_hour && status.happy_hour_start && (
-            <div style={{fontSize:11,color:'var(--text-dim)'}}>
-              해피아워: {status.happy_hour_start?.slice(11,16)}~{status.happy_hour_end?.slice(11,16)}
-            </div>
-          )}
         </div>
 
         {/* 도움말 팝업 */}
@@ -1490,26 +1631,17 @@ function RPSPage({ onPointsChange }) {
           <div className="rps-help-popup">
             <div className="rps-help-section">
               <strong>기본 규칙</strong>
-              <p>배당 1.98배 (승리 시 배팅금의 98% 수익). 배팅금의 7%는 잭팟 풀에 적립.</p>
-            </div>
-            <div className="rps-help-section">
-              <strong>{e('🔥','')} 연승 보너스</strong> <span style={{color:'var(--text-dim)'}}>(무승부는 연승 유지)</span>
-              <p>2연승 +10% · 3연승 +20% · 4연승 +35% · 5연승 +50% · 6연승 +60% · 7연승+ +100%</p>
+              <p>배당 1.98배 (승리 시 배팅금의 98% 수익). 배팅금의 5%는 잭팟 풀에 적립.</p>
             </div>
             <div className="rps-help-section">
               <strong>{e('🎰','')} 잭팟</strong>
-              <p>모든 배팅금의 7%가 잭팟 풀에 쌓임. 100P 이상 배팅 시 추첨 참여 (승패 무관).</p>
-              <p>100~199P: 0.8% · 200~499P: 1.6% · 500P+: 2.5%</p>
-            </div>
-            <div className="rps-help-section">
-              <strong>{e('⚡','')} 해피아워</strong>
-              <p>매일 랜덤 1시간. 모든 승리 수익 1.5배!</p>
+              <p>모든 배팅금의 5%가 잭팟 풀에 쌓임. 100P 이상 배팅 시 0.1% 확률로 당첨 (승패 무관).</p>
             </div>
           </div>
         )}
 
         <div className="form-group">
-          <div className="form-label">배팅 포인트 <span style={{fontSize:11,color:'var(--text-dim)'}}>(최대 {fmt(Math.max(1, Math.floor(points * 0.9)))}P · 배당 1.98배{status?.happy_hour ? ' · ⚡해피아워 1.5배' : ''})</span></div>
+          <div className="form-label">배팅 포인트 <span style={{fontSize:11,color:'var(--text-dim)'}}>(최대 {fmt(Math.max(1, Math.floor(points * 0.9)))}P · 배당 1.98배)</span></div>
           <input type="number" placeholder="걸 포인트 입력" value={wager}
             onChange={e => setWager(e.target.value)} max={Math.max(1, Math.floor(points * 0.9))} style={{maxWidth:200}} />
         </div>
@@ -1524,19 +1656,11 @@ function RPSPage({ onPointsChange }) {
         </div>
 
         {result && (
-          <div className={`rps-result mt-16 ${result.win_streak >= 2 && result.result === 'win' && !isExcel() ? 'rps-streak-glow' : ''} ${result.jackpot_win > 0 && !isExcel() ? 'rps-jackpot-glow' : ''}`}>
+          <div className={`rps-result mt-16 ${result.jackpot_win > 0 && !isExcel() ? 'rps-jackpot-glow' : ''}`}>
             {/* 잭팟 당첨 */}
             {result.jackpot_win > 0 && !isExcel() && (
               <div className="rps-jackpot-banner">
                 {e('🎰','')} JACKPOT! +{fmt(result.jackpot_win)}P {e('🎰','')}
-              </div>
-            )}
-            {/* 연승 불꽃 */}
-            {result.win_streak >= 2 && result.result === 'win' && !isExcel() && (
-              <div className="rps-streak-fire">
-                {'🔥'.repeat(Math.min(result.win_streak, 7))}
-                <span className="rps-streak-count">{result.win_streak}연승!</span>
-                {'🔥'.repeat(Math.min(result.win_streak, 7))}
               </div>
             )}
             <div className="rps-battle">
@@ -1554,19 +1678,10 @@ function RPSPage({ onPointsChange }) {
               <span className={`badge ${result.result === 'win' ? 'badge-green' : result.result === 'lose' ? 'badge-red' : 'badge-orange'}`}
                 style={{fontSize:14,padding:'6px 16px'}}>
                 {result.result === 'win'
-                  ? `승리! +${fmt(result.payout)}P${result.streak_bonus > 0 ? ` (연승 +${fmt(result.streak_bonus)})` : ''}${result.happy_bonus > 0 ? ` (해피 +${fmt(result.happy_bonus)})` : ''}`
+                  ? `승리! +${fmt(result.payout)}P${result.happy_bonus > 0 ? ` (해피 +${fmt(result.happy_bonus)})` : ''}`
                   : result.result === 'lose' ? `패배 ${fmt(result.payout)}P` : '무승부'}
               </span>
             </div>
-            {result.result === 'win' && result.win_streak >= 1 && (
-              <div style={{textAlign:'center',marginTop:8,fontSize:12,color:'var(--text-dim)'}}>
-                현재 {result.win_streak}연승
-                {result.win_streak >= 1 && result.win_streak < 7 && ` · 다음 보너스: ${
-                  {1:'+10%',2:'+20%',3:'+35%',4:'+50%',5:'+60%',6:'+100%'}[result.win_streak] || ''
-                }`}
-                {result.win_streak >= 7 && ' · 최대 보너스 +100% 유지'}
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -2288,6 +2403,1252 @@ function GachaPage({ onPointsChange }) {
 }
 
 
+// ═══════════════════════════════════════════════
+// OMOK PAGE (오목 - 렌주룰)
+// ═══════════════════════════════════════════════
+function OmokPage({ onPointsChange }) {
+  const [view, setView] = useState('list')
+  const [rooms, setRooms] = useState([])
+  const [room, setRoom] = useState(null)
+  const [points, setPoints] = useState(0)
+  const [showCreate, setShowCreate] = useState(false)
+  const [betAmount, setBetAmount] = useState('')
+  const [history, setHistory] = useState([])
+  const [showHistory, setShowHistory] = useState(false)
+  const [leaderboard, setLeaderboard] = useState([])
+  const [showLeaderboard, setShowLeaderboard] = useState(false)
+  const [myMmr, setMyMmr] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [lastMove, setLastMove] = useState(null)
+  const [specBets, setSpecBets] = useState(null)
+  const [specBetAmount, setSpecBetAmount] = useState('')
+  const [showWeekly, setShowWeekly] = useState(false)
+  const [weeklyData, setWeeklyData] = useState(null)
+  const pollingRef = useRef(null)
+  const currentUser = api.getUser()
+
+  const loadRooms = async () => {
+    try {
+      const [rs, p, mmr] = await Promise.all([
+        api.getOmokRooms().catch(() => []),
+        api.getPoints().catch(() => ({ points: 0 })),
+        api.getMyMmr().catch(() => ({})),
+      ])
+      setRooms(rs); setPoints(p.points); setMyMmr(mmr.omok || null)
+    } catch {}
+    setLoading(false)
+  }
+
+  const loadRoom = async (id) => {
+    try {
+      const r = await api.getOmokRoom(id)
+      setRoom(r)
+      if (r.moves && r.moves.length > 0) {
+        const last = r.moves[r.moves.length - 1]
+        setLastMove({ x: last.x, y: last.y })
+      }
+      if (r.status === 'FINISHED' || r.status === 'CANCELLED') stopPolling()
+    } catch (e) { alert(e.message); goBack() }
+  }
+
+  const startPolling = (id) => { stopPolling(); pollingRef.current = setInterval(() => loadRoom(id), 1500) }
+  const stopPolling = () => { if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null } }
+  const goBack = () => { stopPolling(); setView('list'); setRoom(null); loadRooms(); onPointsChange?.() }
+
+  useEffect(() => { loadRooms(); return () => stopPolling() }, [])
+
+  const enterRoom = async (id) => {
+    setLoading(true)
+    try { const r = await api.getOmokRoom(id); setRoom(r); setView('room'); startPolling(id); loadSpecBets(id) } catch (e) { alert(e.message) }
+    setLoading(false)
+  }
+
+  const handleCreate = async () => {
+    const bet = parseInt(betAmount) || 0
+    if (bet < 0) return alert('베팅 금액이 올바르지 않습니다')
+    try {
+      const res = await api.createOmokRoom({ bet_amount: bet })
+      setShowCreate(false); setBetAmount('')
+      enterRoom(res.room_id); onPointsChange?.()
+    } catch (e) { alert(e.message) }
+  }
+
+  const handleJoin = async (id) => {
+    try { await api.joinOmokRoom(id); enterRoom(id); onPointsChange?.() } catch (e) { alert(e.message) }
+  }
+
+  const handleMove = async (x, y) => {
+    if (!room || room.status !== 'PLAYING') return
+    const myColor = room.creator_id === currentUser?.user_id ? room.creator_color : (room.creator_color === 'B' ? 'W' : 'B')
+    if (room.current_turn !== myColor) return
+    if (room.board[y][x] !== 0) return
+    try {
+      await api.omokMove(room.id, { x, y })
+      setLastMove({ x, y })
+      loadRoom(room.id)
+      onPointsChange?.()
+    } catch (e) { alert(e.message) }
+  }
+
+  const handleResign = async () => {
+    if (!confirm('기권하시겠습니까?')) return
+    try { await api.omokResign(room.id); loadRoom(room.id); onPointsChange?.() } catch (e) { alert(e.message) }
+  }
+
+  const handleCancel = async () => {
+    try { await api.cancelOmokRoom(room.id); goBack() } catch (e) { alert(e.message) }
+  }
+
+  const handleRematch = async () => {
+    try { await api.omokRematch(room.id); loadRoom(room.id); onPointsChange?.(); startPolling(room.id) } catch (e) { alert(e.message) }
+  }
+
+  const handleUndoRequest = async () => {
+    try { await api.omokUndoRequest(room.id); loadRoom(room.id) } catch (e) { alert(e.message) }
+  }
+
+  const handleUndoResponse = async (accept) => {
+    try { await api.omokUndoResponse(room.id, { accept }); loadRoom(room.id) } catch (e) { alert(e.message) }
+  }
+
+  const loadLeaderboard = async () => {
+    try { const lb = await api.getMmrLeaderboard('omok'); setLeaderboard(lb); setShowLeaderboard(true) } catch (e) { alert(e.message) }
+  }
+
+  const loadHistory = async () => {
+    try { const h = await api.getOmokHistory(); setHistory(h); setShowHistory(true) } catch (e) { alert(e.message) }
+  }
+
+  const loadSpecBets = async (roomId) => {
+    try { const data = await api.getSpectatorBets('omok', roomId); setSpecBets(data) } catch (e) {}
+  }
+
+  const handleSpecBet = async (predictedWinnerId) => {
+    const amt = parseInt(specBetAmount)
+    if (!amt || amt <= 0) return alert('배팅 포인트를 입력하세요')
+    try {
+      await api.placeSpectatorBet('omok', room.id, { predicted_winner_id: predictedWinnerId, amount: amt })
+      setSpecBetAmount('')
+      loadSpecBets(room.id)
+      onPointsChange?.()
+      api.getPoints().then(r => setPoints(r.points)).catch(() => {})
+    } catch (e) { alert(e.message) }
+  }
+
+  const loadWeekly = async () => {
+    try { const data = await api.getWeeklyOmokLeaderboard(); setWeeklyData(data); setShowWeekly(true) } catch (e) { alert(e.message) }
+  }
+
+  if (loading) return <div className="loading">로딩 중...</div>
+
+  // ── Room View ──
+  if (view === 'room' && room) {
+    const isCreator = currentUser?.user_id === room.creator_id
+    const isParticipant = currentUser?.user_id === room.creator_id || currentUser?.user_id === room.opponent_id
+    const myColor = isCreator ? room.creator_color : (room.creator_color === 'B' ? 'W' : 'B')
+    const isMyTurn = isParticipant && room.status === 'PLAYING' && room.current_turn === myColor
+
+    return (
+      <div>
+        <button className="btn btn-outline mb-16" onClick={goBack} style={{fontSize:12}}>← 목록으로</button>
+        <div className="card mb-16">
+          <div className="flex-between mb-8">
+            <div className="card-title" style={{margin:0}}>
+              {e('⚫','')} 오목 #{room.id} (게임 {room.game_number})
+            </div>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              {!isParticipant && room.status === 'PLAYING' && <span className="badge badge-blue">관전 중</span>}
+              <span className={`badge ${room.status === 'PLAYING' ? 'badge-green' : room.status === 'FINISHED' ? 'badge-orange' : 'badge-red'}`}>
+                {room.status === 'PLAYING' ? '진행중' : room.status === 'FINISHED' ? '종료' : room.status === 'WAITING' ? '대기중' : '취소됨'}
+              </span>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:16,flexWrap:'wrap',fontSize:13,color:'var(--text-dim)'}}>
+            <span>흑: <strong style={{color: room.creator_color === 'B' ? 'var(--text)' : 'var(--text-dim)'}}>{room.creator_color === 'B' ? room.creator_name : (room.opponent_name || '대기중')}</strong></span>
+            <span>백: <strong style={{color: room.creator_color === 'W' ? 'var(--text)' : 'var(--text-dim)'}}>{room.creator_color === 'W' ? room.creator_name : (room.opponent_name || '대기중')}</strong></span>
+            {room.bet_amount > 0 && <span>베팅: <strong style={{color:'var(--accent-orange)'}}>{fmt(room.bet_amount)}P</strong></span>}
+            <span>수순: {room.move_count}</span>
+            {room.status === 'PLAYING' && (isParticipant
+              ? <span style={{color: isMyTurn ? 'var(--green)' : 'var(--red)'}}>{isMyTurn ? '내 차례' : '상대 차례'} ({room.current_turn === 'B' ? '흑' : '백'})</span>
+              : <span style={{color:'var(--text-dim)'}}>관전 중 ({room.current_turn === 'B' ? '흑' : '백'} 차례)</span>
+            )}
+          </div>
+        </div>
+
+        {/* 오목판 */}
+        <div className="omok-board-wrap">
+          {isExcel() && (
+            <div className="omok-excel-col-headers">
+              <div className="omok-excel-corner" />
+              {Array.from({length:19}, (_, x) => (
+                <div key={x} className="omok-excel-col-hdr">{String.fromCharCode(65+x)}</div>
+              ))}
+            </div>
+          )}
+          <div className={`omok-board${isExcel() ? ' omok-board-excel' : ''}`}>
+            {Array.from({length:19}, (_, y) => [
+              isExcel() && <div key={`rn-${y}`} className="omok-excel-row-num">{y+1}</div>,
+              ...Array.from({length:19}, (_, x) => {
+                const stone = room.board?.[y]?.[x]
+                const isLast = lastMove && lastMove.x === x && lastMove.y === y
+                const isStar = [3,9,15].includes(x) && [3,9,15].includes(y)
+                return (
+                  <div key={`${x}-${y}`}
+                    className={`omok-cell${isMyTurn && stone === 0 ? ' clickable' : ''}${isExcel() && stone === 1 ? ' xls-b' : ''}${isExcel() && stone === 2 ? ' xls-w' : ''}${isExcel() && isLast ? ' xls-last' : ''}`}
+                    onClick={() => handleMove(x, y)}>
+                    {!isExcel() && isStar && stone === 0 && <div className="omok-star" />}
+                    {!isExcel() && stone === 1 && <div className={`omok-stone black${isLast ? ' last-move' : ''}`}>{isLast && <div className="last-dot" />}</div>}
+                    {!isExcel() && stone === 2 && <div className={`omok-stone white${isLast ? ' last-move' : ''}`}>{isLast && <div className="last-dot" />}</div>}
+                  </div>
+                )
+              })
+            ])}
+          </div>
+        </div>
+
+        {/* 관전 배팅 (관전자 전용) */}
+        {!isParticipant && room.status === 'PLAYING' && (
+          <div className="card mb-16">
+            <div className="card-title" style={{margin:'0 0 8px'}}>{e('🎯','')} 관전 배팅</div>
+            {specBets?.my_bet ? (
+              <div style={{fontSize:13,color:'var(--text-dim)'}}>
+                이미 배팅 완료: <strong>{specBets.my_bet.predicted_winner_name}</strong>에 <strong>{fmt(specBets.my_bet.amount)}P</strong>
+              </div>
+            ) : (
+              <div>
+                <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
+                  <input type="number" placeholder="포인트" value={specBetAmount} onChange={e => setSpecBetAmount(e.target.value)}
+                    style={{width:120}} />
+                  <button className="btn btn-primary btn-sm" onClick={() => handleSpecBet(room.creator_id)}>
+                    {room.creator_color === 'B' ? '흑' : '백'} {room.creator_name} 예측
+                  </button>
+                  <button className="btn btn-sell btn-sm" onClick={() => handleSpecBet(room.opponent_id)}>
+                    {room.creator_color === 'B' ? '백' : '흑'} {room.opponent_name} 예측
+                  </button>
+                </div>
+                <div style={{fontSize:11,color:'var(--text-dim)'}}>보유: {fmt(points)}P · 적중 시 배당 비례 배분</div>
+              </div>
+            )}
+            {specBets && specBets.bets.length > 0 && (
+              <div style={{marginTop:8,fontSize:12}}>
+                <div style={{color:'var(--text-dim)',marginBottom:4}}>배팅 현황 (총 {fmt(specBets.total_pool)}P)</div>
+                {specBets.bets.filter(b => b.status === 'PENDING').map(b => (
+                  <div key={b.id} style={{display:'flex',gap:8,padding:'2px 0'}}>
+                    <span>{b.nickname}</span>
+                    <span style={{color:'var(--accent-orange)'}}>{fmt(b.amount)}P</span>
+                    <span style={{color:'var(--text-dim)'}}>→ {b.predicted_winner_name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 관전 배팅 결과 (종료 시) */}
+        {!isParticipant && room.status === 'FINISHED' && specBets?.my_bet && (
+          <div className="card mb-16" style={{textAlign:'center'}}>
+            <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>
+              {specBets.my_bet.status === 'WON' ? `${e('🎯','')} 관전 배팅 적중! +${fmt(specBets.my_bet.payout - specBets.my_bet.amount)}P` :
+               specBets.my_bet.status === 'LOST' ? '관전 배팅 실패' :
+               specBets.my_bet.status === 'REFUNDED' ? `관전 배팅 환불 +${fmt(specBets.my_bet.amount)}P` : ''}
+            </div>
+          </div>
+        )}
+
+        {/* 대기 안내 */}
+        {room.status === 'WAITING' && (
+          <div className="card mb-16" style={{textAlign:'center',padding:'24px 16px'}}>
+            <div style={{fontSize:16,color:'var(--text-dim)',marginBottom:8}}>상대방을 기다리는 중...</div>
+            <div style={{fontSize:12,color:'var(--text-dim)'}}>다른 유저가 참가하면 게임이 시작됩니다</div>
+          </div>
+        )}
+
+        {/* 결과 & 액션 */}
+        {room.status === 'FINISHED' && (
+          <div className="card mb-16" style={{textAlign:'center'}}>
+            {room.winner_id ? (
+              <div>
+                <div style={{fontSize:18,fontWeight:700,marginBottom:8}}>
+                  {room.winner_id === currentUser?.user_id ? `${e('🎉','')} 승리!` : isParticipant ? '패배' : `${room.winner_name || '승자'} 승리`}
+                </div>
+                <div style={{fontSize:13,color:'var(--text-dim)'}}>
+                  사유: {room.win_reason === 'five' ? '5목' : room.win_reason === 'resign' ? '기권' : room.win_reason}
+                  {room.bet_amount > 0 && isParticipant && ` | ${room.winner_id === currentUser?.user_id ? '+' : '-'}${fmt(room.bet_amount)}P`}
+                </div>
+              </div>
+            ) : (
+              <div style={{fontSize:18,fontWeight:700}}>무승부</div>
+            )}
+            {isParticipant && (
+              <button className="btn btn-primary mt-12" onClick={handleRematch}>{e('🔄','')} 한판더하기</button>
+            )}
+          </div>
+        )}
+
+        {room.status === 'PLAYING' && isParticipant && (() => {
+          const myColor = isCreator ? room.creator_color : (room.creator_color === 'B' ? 'W' : 'B')
+          const isMyTurnNow = room.current_turn === myColor
+          const hasPendingUndo = room.undo_request_by != null
+          const iMyUndoReq = room.undo_request_by === currentUser?.user_id
+          const isOpponentUndoReq = hasPendingUndo && !iMyUndoReq
+          const canRequestUndo = !isMyTurnNow && !hasPendingUndo && room.move_count > 0
+          return (
+            <div style={{textAlign:'center',marginTop:12,display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap'}}>
+              {isOpponentUndoReq && (
+                <div className="card" style={{padding:'10px 16px',display:'inline-flex',gap:8,alignItems:'center'}}>
+                  <span style={{fontSize:13}}>상대가 한수 무르기를 요청했습니다</span>
+                  <button className="btn btn-primary btn-sm" onClick={() => handleUndoResponse(true)}>수락</button>
+                  <button className="btn btn-sell btn-sm" onClick={() => handleUndoResponse(false)}>거절</button>
+                </div>
+              )}
+              {iMyUndoReq && (
+                <span style={{fontSize:13,color:'var(--text-dim)',alignSelf:'center'}}>한수 무르기 요청 중...</span>
+              )}
+              {canRequestUndo && (
+                <button className="btn btn-ghost" onClick={handleUndoRequest}>한수 무르기</button>
+              )}
+              <button className="btn btn-sell" onClick={handleResign}>기권</button>
+            </div>
+          )
+        })()}
+        {room.status === 'WAITING' && isCreator && (
+          <div style={{textAlign:'center',marginTop:12}}>
+            <button className="btn btn-sell" onClick={handleCancel}>방 취소</button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── List View ──
+  return (
+    <div>
+      <div className="flex-between mb-16">
+        <h2 style={{margin:0}}>{e('⚫','')} 오목 (렌주룰)</h2>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {myMmr && <span className="badge badge-blue" style={{alignSelf:'center'}}>MMR {myMmr.mmr}</span>}
+          <button className="btn btn-ghost" onClick={loadLeaderboard}>{e('🏆','')} 리더보드</button>
+          <button className="btn btn-ghost" onClick={loadWeekly}>{e('📅','')} 주간</button>
+          <button className="btn btn-ghost" onClick={loadHistory}>{e('📜','')} 전적</button>
+          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ 방 만들기</button>
+        </div>
+      </div>
+
+      <div className="card mb-8" style={{fontSize:12,color:'var(--text-dim)',padding:'8px 16px'}}>
+        렌주룰: 방장이 흑(선공). 흑은 쌍삼/쌍사/장목 금지. 한판더하기 시 흑백 스왑.
+      </div>
+
+      {showCreate && (
+        <div className="card mb-16">
+          <div className="card-title">방 만들기</div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <input type="number" placeholder="베팅 포인트 (0=무료)" value={betAmount} onChange={e => setBetAmount(e.target.value)} style={{width:160}} />
+            <button className="btn btn-primary" onClick={handleCreate}>생성</button>
+            <button className="btn btn-ghost" onClick={() => setShowCreate(false)}>취소</button>
+          </div>
+          <div style={{fontSize:12,color:'var(--text-dim)',marginTop:4}}>보유: {fmt(points)}P</div>
+        </div>
+      )}
+
+      {rooms.length === 0 ? (
+        <div className="card" style={{textAlign:'center',color:'var(--text-dim)'}}>대기 중인 방이 없습니다</div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>방장</th><th>상대</th><th>베팅</th><th>상태</th><th></th></tr></thead>
+            <tbody>
+              {rooms.map(r => (
+                <tr key={r.id}>
+                  <td>{r.id}</td>
+                  <td>{r.creator_name}</td>
+                  <td>{r.opponent_name || '-'}</td>
+                  <td>{r.bet_amount > 0 ? `${fmt(r.bet_amount)}P` : '무료'}</td>
+                  <td><span className={`badge ${r.status === 'PLAYING' ? 'badge-green' : 'badge-orange'}`}>{r.status === 'PLAYING' ? '진행중' : '대기중'}</span></td>
+                  <td>
+                    {r.status === 'WAITING' && r.creator_id !== currentUser?.user_id && (
+                      <button className="btn btn-primary btn-sm" onClick={() => handleJoin(r.id)}>참가</button>
+                    )}
+                    {(r.creator_id === currentUser?.user_id || r.opponent_id === currentUser?.user_id) && (
+                      <button className="btn btn-ghost btn-sm" onClick={() => enterRoom(r.id)}>입장</button>
+                    )}
+                    {r.status === 'PLAYING' && r.creator_id !== currentUser?.user_id && r.opponent_id !== currentUser?.user_id && (
+                      <button className="btn btn-ghost btn-sm" onClick={() => enterRoom(r.id)}>관전</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* 리더보드 모달 */}
+      {showLeaderboard && (
+        <div className="modal-overlay" onClick={() => setShowLeaderboard(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="flex-between mb-16">
+              <h3 style={{margin:0}}>{e('🏆','')} 오목 MMR 리더보드</h3>
+              <button className="btn btn-ghost" onClick={() => setShowLeaderboard(false)}>✕</button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>#</th><th>닉네임</th><th>MMR</th><th>승</th><th>패</th><th>무</th><th>승률</th></tr></thead>
+                <tbody>
+                  {leaderboard.map((r, i) => (
+                    <tr key={r.user_id} className={r.user_id === currentUser?.user_id ? 'highlight-row' : ''}>
+                      <td className={rankClass(i+1)}>{i+1}</td>
+                      <td>{r.nickname}</td>
+                      <td><strong>{r.mmr}</strong></td>
+                      <td style={{color:'var(--green)'}}>{r.wins}</td>
+                      <td style={{color:'var(--red)'}}>{r.losses}</td>
+                      <td>{r.draws}</td>
+                      <td>{r.wins + r.losses > 0 ? ((r.wins / (r.wins + r.losses)) * 100).toFixed(1) + '%' : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 전적 모달 */}
+      {showHistory && (
+        <div className="modal-overlay" onClick={() => setShowHistory(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="flex-between mb-16">
+              <h3 style={{margin:0}}>{e('📜','')} 오목 전적</h3>
+              <button className="btn btn-ghost" onClick={() => setShowHistory(false)}>✕</button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>상대</th><th>결과</th><th>수순</th><th>베팅</th><th>시간</th></tr></thead>
+                <tbody>
+                  {history.map(r => {
+                    const isWin = r.winner_id === currentUser?.user_id
+                    const isDraw = !r.winner_id
+                    const opponent = r.creator_id === currentUser?.user_id ? r.opponent_name : r.creator_name
+                    return (
+                      <tr key={r.id}>
+                        <td>{opponent}</td>
+                        <td style={{color: isDraw ? 'var(--text-dim)' : isWin ? 'var(--green)' : 'var(--red)', fontWeight:700}}>
+                          {isDraw ? '무승부' : isWin ? '승' : '패'}
+                        </td>
+                        <td>{r.move_count}수</td>
+                        <td>{r.bet_amount > 0 ? `${fmt(r.bet_amount)}P` : '-'}</td>
+                        <td style={{fontSize:11,color:'var(--text-dim)'}}>{r.finished_at?.slice(5,16)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 주간 리더보드 모달 */}
+      {showWeekly && weeklyData && (
+        <div className="modal-overlay" onClick={() => setShowWeekly(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="flex-between mb-16">
+              <h3 style={{margin:0}}>{e('📅','')} 오목 주간 리더보드</h3>
+              <button className="btn btn-ghost" onClick={() => setShowWeekly(false)}>✕</button>
+            </div>
+            <div style={{fontSize:12,color:'var(--text-dim)',marginBottom:12}}>
+              {weeklyData.week_start} ~ {weeklyData.week_end}
+              {weeklyData.rewarded && <span className="badge badge-green" style={{marginLeft:8}}>보상 지급 완료</span>}
+            </div>
+            <div style={{fontSize:12,color:'var(--accent-orange)',marginBottom:12}}>
+              주간 보상: 1등 3,000P / 2등 2,000P / 3등 1,000P
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>#</th><th>닉네임</th><th>MMR</th><th>승</th><th>패</th><th>승률</th></tr></thead>
+                <tbody>
+                  {weeklyData.leaderboard.map((r, i) => (
+                    <tr key={r.user_id} className={r.user_id === currentUser?.user_id ? 'highlight-row' : ''}>
+                      <td className={rankClass(i+1)}>{i+1} {i < 3 ? ['🥇','🥈','🥉'][i] : ''}</td>
+                      <td>{r.nickname}</td>
+                      <td><strong>{r.mmr}</strong></td>
+                      <td style={{color:'var(--green)'}}>{r.wins}</td>
+                      <td style={{color:'var(--red)'}}>{r.losses}</td>
+                      <td>{r.wins + r.losses > 0 ? ((r.wins / (r.wins + r.losses)) * 100).toFixed(1) + '%' : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ═══════════════════════════════════════════════
+// CHESS PAGE (체스)
+// ═══════════════════════════════════════════════
+
+// ── Minimal Chess Engine (client-side) ──
+const CHESS_INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+
+function parseFEN(fen) {
+  const [board, turn, castling, ep, halfmove, fullmove] = fen.split(' ')
+  const squares = []
+  for (const row of board.split('/')) {
+    const r = []
+    for (const c of row) {
+      if (c >= '1' && c <= '8') for (let i = 0; i < parseInt(c); i++) r.push(null)
+      else r.push(c)
+    }
+    squares.push(r)
+  }
+  return { squares, turn, castling, ep: ep === '-' ? null : ep, halfmove: parseInt(halfmove), fullmove: parseInt(fullmove) }
+}
+
+function toFEN(state) {
+  let fen = ''
+  for (let r = 0; r < 8; r++) {
+    let empty = 0
+    for (let c = 0; c < 8; c++) {
+      if (!state.squares[r][c]) { empty++ }
+      else { if (empty) { fen += empty; empty = 0 } fen += state.squares[r][c] }
+    }
+    if (empty) fen += empty
+    if (r < 7) fen += '/'
+  }
+  return `${fen} ${state.turn} ${state.castling || '-'} ${state.ep || '-'} ${state.halfmove} ${state.fullmove}`
+}
+
+function sqToRC(sq) { return [8 - parseInt(sq[1]), sq.charCodeAt(0) - 97] }
+function rcToSq(r, c) { return String.fromCharCode(97 + c) + (8 - r) }
+
+function isWhite(p) { return p && p === p.toUpperCase() }
+function isBlack(p) { return p && p === p.toLowerCase() }
+function colorOf(p) { return p ? (isWhite(p) ? 'w' : 'b') : null }
+
+function getValidMoves(state) {
+  // Returns map: "e2" -> ["e3","e4"] etc.
+  const moves = {}
+  const { squares, turn, castling, ep } = state
+  const isW = turn === 'w'
+
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const p = squares[r][c]
+      if (!p || (isW ? isBlack(p) : isWhite(p))) continue
+      const from = rcToSq(r, c)
+      const targets = []
+      const pt = p.toLowerCase()
+
+      const addIfValid = (tr, tc) => {
+        if (tr < 0 || tr > 7 || tc < 0 || tc > 7) return false
+        const tp = squares[tr][tc]
+        if (tp && colorOf(tp) === turn) return false
+        targets.push(rcToSq(tr, tc))
+        return !tp // can continue sliding?
+      }
+
+      if (pt === 'p') {
+        const dir = isW ? -1 : 1
+        const startRow = isW ? 6 : 1
+        // Forward
+        if (r+dir >= 0 && r+dir <= 7 && !squares[r+dir][c]) {
+          targets.push(rcToSq(r+dir, c))
+          if (r === startRow && !squares[r+2*dir][c]) targets.push(rcToSq(r+2*dir, c))
+        }
+        // Captures
+        for (const dc of [-1, 1]) {
+          const tr = r+dir, tc = c+dc
+          if (tc < 0 || tc > 7 || tr < 0 || tr > 7) continue
+          const tp = squares[tr][tc]
+          if (tp && colorOf(tp) !== turn) targets.push(rcToSq(tr, tc))
+          // En passant
+          if (ep && rcToSq(tr, tc) === ep) targets.push(ep)
+        }
+      } else if (pt === 'n') {
+        for (const [dr,dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) addIfValid(r+dr, c+dc)
+      } else if (pt === 'b') {
+        for (const [dr,dc] of [[-1,-1],[-1,1],[1,-1],[1,1]]) { for (let i=1;i<8;i++) { if(!addIfValid(r+dr*i,c+dc*i)) break } }
+      } else if (pt === 'r') {
+        for (const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]) { for (let i=1;i<8;i++) { if(!addIfValid(r+dr*i,c+dc*i)) break } }
+      } else if (pt === 'q') {
+        for (const [dr,dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) { for (let i=1;i<8;i++) { if(!addIfValid(r+dr*i,c+dc*i)) break } }
+      } else if (pt === 'k') {
+        for (const [dr,dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) addIfValid(r+dr, c+dc)
+        // Castling
+        const kRow = isW ? 7 : 0
+        if (r === kRow && c === 4) {
+          const ks = isW ? 'K' : 'k'
+          const qs = isW ? 'Q' : 'q'
+          if (castling.includes(ks) && !squares[kRow][5] && !squares[kRow][6] && squares[kRow][7]?.toLowerCase() === 'r') {
+            if (!isSquareAttacked(squares, kRow, 4, turn) && !isSquareAttacked(squares, kRow, 5, turn) && !isSquareAttacked(squares, kRow, 6, turn))
+              targets.push(rcToSq(kRow, 6))
+          }
+          if (castling.includes(qs) && !squares[kRow][3] && !squares[kRow][2] && !squares[kRow][1] && squares[kRow][0]?.toLowerCase() === 'r') {
+            if (!isSquareAttacked(squares, kRow, 4, turn) && !isSquareAttacked(squares, kRow, 3, turn) && !isSquareAttacked(squares, kRow, 2, turn))
+              targets.push(rcToSq(kRow, 2))
+          }
+        }
+      }
+
+      // Filter moves that leave king in check
+      const legal = targets.filter(to => {
+        const ns = applyMoveRaw(state, from, to)
+        return !isInCheck(ns.squares, turn)
+      })
+      if (legal.length > 0) moves[from] = legal
+    }
+  }
+  return moves
+}
+
+function isSquareAttacked(squares, r, c, byColor) {
+  // Is square (r,c) attacked by opponent of byColor?
+  const opp = byColor === 'w' ? 'b' : 'w'
+  // Knight attacks
+  for (const [dr,dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) {
+    const tr=r+dr,tc=c+dc
+    if (tr>=0&&tr<=7&&tc>=0&&tc<=7) {
+      const p = squares[tr][tc]
+      if (p && colorOf(p)===opp && p.toLowerCase()==='n') return true
+    }
+  }
+  // King attacks
+  for (const [dr,dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) {
+    const tr=r+dr,tc=c+dc
+    if (tr>=0&&tr<=7&&tc>=0&&tc<=7) {
+      const p = squares[tr][tc]
+      if (p && colorOf(p)===opp && p.toLowerCase()==='k') return true
+    }
+  }
+  // Pawn attacks
+  const pDir = byColor === 'w' ? -1 : 1
+  for (const dc of [-1,1]) {
+    const tr=r+pDir,tc=c+dc
+    if (tr>=0&&tr<=7&&tc>=0&&tc<=7) {
+      const p = squares[tr][tc]
+      if (p && colorOf(p)===opp && p.toLowerCase()==='p') return true
+    }
+  }
+  // Sliding: bishop/queen diagonals
+  for (const [dr,dc] of [[-1,-1],[-1,1],[1,-1],[1,1]]) {
+    for (let i=1;i<8;i++) {
+      const tr=r+dr*i,tc=c+dc*i
+      if (tr<0||tr>7||tc<0||tc>7) break
+      const p = squares[tr][tc]
+      if (p) { if (colorOf(p)===opp && (p.toLowerCase()==='b'||p.toLowerCase()==='q')) return true; break }
+    }
+  }
+  // Sliding: rook/queen lines
+  for (const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    for (let i=1;i<8;i++) {
+      const tr=r+dr*i,tc=c+dc*i
+      if (tr<0||tr>7||tc<0||tc>7) break
+      const p = squares[tr][tc]
+      if (p) { if (colorOf(p)===opp && (p.toLowerCase()==='r'||p.toLowerCase()==='q')) return true; break }
+    }
+  }
+  return false
+}
+
+function isInCheck(squares, color) {
+  // Find king
+  const k = color === 'w' ? 'K' : 'k'
+  for (let r=0;r<8;r++) for (let c=0;c<8;c++) if (squares[r][c]===k) return isSquareAttacked(squares, r, c, color)
+  return false
+}
+
+function applyMoveRaw(state, from, to, promotion) {
+  const [fr,fc] = sqToRC(from)
+  const [tr,tc] = sqToRC(to)
+  const newSq = state.squares.map(row => [...row])
+  const piece = newSq[fr][fc]
+  const captured = newSq[tr][tc]
+  const pt = piece?.toLowerCase()
+  const isW = state.turn === 'w'
+
+  newSq[tr][tc] = piece
+  newSq[fr][fc] = null
+
+  let newEp = null
+  let newCastling = state.castling
+
+  // Pawn specials
+  if (pt === 'p') {
+    // En passant capture
+    if (state.ep && to === state.ep) {
+      const epRow = isW ? tr+1 : tr-1
+      newSq[epRow][tc] = null
+    }
+    // Double push -> set ep
+    if (Math.abs(fr-tr) === 2) {
+      newEp = rcToSq((fr+tr)/2, fc)
+    }
+    // Promotion
+    if (tr === 0 || tr === 7) {
+      const promo = promotion || 'q'
+      newSq[tr][tc] = isW ? promo.toUpperCase() : promo.toLowerCase()
+    }
+  }
+
+  // Castling move
+  if (pt === 'k') {
+    if (Math.abs(fc-tc) === 2) {
+      if (tc === 6) { newSq[fr][5] = newSq[fr][7]; newSq[fr][7] = null } // kingside
+      if (tc === 2) { newSq[fr][3] = newSq[fr][0]; newSq[fr][0] = null } // queenside
+    }
+    newCastling = newCastling.replace(isW ? /[KQ]/g : /[kq]/g, '')
+  }
+  if (pt === 'r') {
+    if (isW) {
+      if (fr===7&&fc===7) newCastling = newCastling.replace('K','')
+      if (fr===7&&fc===0) newCastling = newCastling.replace('Q','')
+    } else {
+      if (fr===0&&fc===7) newCastling = newCastling.replace('k','')
+      if (fr===0&&fc===0) newCastling = newCastling.replace('q','')
+    }
+  }
+  // Rook captured
+  if (tr===0&&tc===7) newCastling = newCastling.replace('k','')
+  if (tr===0&&tc===0) newCastling = newCastling.replace('q','')
+  if (tr===7&&tc===7) newCastling = newCastling.replace('K','')
+  if (tr===7&&tc===0) newCastling = newCastling.replace('Q','')
+
+  if (!newCastling) newCastling = '-'
+
+  const newTurn = state.turn === 'w' ? 'b' : 'w'
+  const newHalfmove = (pt === 'p' || captured) ? 0 : state.halfmove + 1
+  const newFullmove = state.fullmove + (state.turn === 'b' ? 1 : 0)
+
+  return { squares: newSq, turn: newTurn, castling: newCastling, ep: newEp, halfmove: newHalfmove, fullmove: newFullmove }
+}
+
+const PIECE_UNICODE = { K:'♔', Q:'♕', R:'♖', B:'♗', N:'♘', P:'♙', k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟' }
+
+function ChessPage({ onPointsChange }) {
+  const [view, setView] = useState('list')
+  const [rooms, setRooms] = useState([])
+  const [room, setRoom] = useState(null)
+  const [points, setPoints] = useState(0)
+  const [showCreate, setShowCreate] = useState(false)
+  const [betAmount, setBetAmount] = useState('')
+  const [history, setHistory] = useState([])
+  const [showHistory, setShowHistory] = useState(false)
+  const [leaderboard, setLeaderboard] = useState([])
+  const [showLeaderboard, setShowLeaderboard] = useState(false)
+  const [myMmr, setMyMmr] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [gameState, setGameState] = useState(null)
+  const [validMoves, setValidMoves] = useState({})
+  const [selectedSq, setSelectedSq] = useState(null)
+  const [promotionPending, setPromotionPending] = useState(null)
+  const [specBets, setSpecBets] = useState(null)
+  const [specBetAmount, setSpecBetAmount] = useState('')
+  const pollingRef = useRef(null)
+  const lastFenRef = useRef(null)
+  const currentUser = api.getUser()
+
+  const loadRooms = async () => {
+    try {
+      const [rs, p, mmr] = await Promise.all([
+        api.getChessRooms().catch(() => []),
+        api.getPoints().catch(() => ({ points: 0 })),
+        api.getMyMmr().catch(() => ({})),
+      ])
+      setRooms(rs); setPoints(p.points); setMyMmr(mmr.chess || null)
+    } catch {}
+    setLoading(false)
+  }
+
+  const loadRoom = async (id) => {
+    try {
+      const r = await api.getChessRoom(id)
+      setRoom(r)
+      // WAITING 상태에서도 초기 보드 렌더링
+      {
+        const gs = parseFEN(r.fen || CHESS_INITIAL_FEN)
+        setGameState(gs)
+        lastFenRef.current = r.fen
+        if (r.status === 'PLAYING') setValidMoves(getValidMoves(gs))
+        else setValidMoves({})
+      }
+      if (r.status === 'FINISHED' || r.status === 'CANCELLED') stopPolling()
+    } catch (e) { alert(e.message); goBack() }
+  }
+
+  const startPolling = (id) => { stopPolling(); pollingRef.current = setInterval(() => loadRoom(id), 1500) }
+  const stopPolling = () => { if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null } }
+  const goBack = () => { stopPolling(); setView('list'); setRoom(null); setGameState(null); setSelectedSq(null); loadRooms(); onPointsChange?.() }
+
+  useEffect(() => { loadRooms(); return () => stopPolling() }, [])
+
+  const enterRoom = async (id) => {
+    setLoading(true)
+    try { await loadRoom(id); setView('room'); startPolling(id); loadSpecBets(id) } catch (e) { alert(e.message) }
+    setLoading(false)
+  }
+
+  const handleCreate = async () => {
+    const bet = parseInt(betAmount) || 0
+    if (bet < 0) return alert('베팅 금액이 올바르지 않습니다')
+    try {
+      const res = await api.createChessRoom({ bet_amount: bet })
+      setShowCreate(false); setBetAmount('')
+      enterRoom(res.room_id); onPointsChange?.()
+    } catch (e) { alert(e.message) }
+  }
+
+  const handleJoin = async (id) => {
+    try { await api.joinChessRoom(id); enterRoom(id); onPointsChange?.() } catch (e) { alert(e.message) }
+  }
+
+  const getMyColor = () => {
+    if (!room) return null
+    if (currentUser?.user_id === room.creator_id) return room.creator_color
+    if (currentUser?.user_id === room.opponent_id) return room.creator_color === 'w' ? 'b' : 'w'
+    return null
+  }
+
+  const handleSquareClick = (r, c) => {
+    if (!room || room.status !== 'PLAYING' || !gameState) return
+    const myColor = getMyColor()
+    if (gameState.turn !== myColor) return
+
+    const sq = rcToSq(r, c)
+    const piece = gameState.squares[r][c]
+
+    if (selectedSq) {
+      const targets = validMoves[selectedSq] || []
+      if (targets.includes(sq)) {
+        // Check pawn promotion
+        const [fr] = sqToRC(selectedSq)
+        const movingPiece = gameState.squares[fr][selectedSq.charCodeAt(0)-97]
+        if (movingPiece?.toLowerCase() === 'p' && (r === 0 || r === 7)) {
+          setPromotionPending({ from: selectedSq, to: sq })
+          return
+        }
+        executeMove(selectedSq, sq)
+        return
+      }
+      // Select new piece
+      if (piece && colorOf(piece) === myColor) { setSelectedSq(sq); return }
+      setSelectedSq(null)
+      return
+    }
+
+    if (piece && colorOf(piece) === myColor && validMoves[sq]) {
+      setSelectedSq(sq)
+    }
+  }
+
+  const executeMove = async (from, to, promotion) => {
+    const newState = applyMoveRaw(gameState, from, to, promotion)
+    const newFen = toFEN(newState)
+    const oppMoves = getValidMoves(newState)
+    const noMoves = Object.keys(oppMoves).length === 0
+    const inCheck = isInCheck(newState.squares, newState.turn)
+    const isCheckmate = noMoves && inCheck
+    const isStalemate = noMoves && !inCheck
+    // 50-move rule or insufficient material simplified
+    const isDraw = isStalemate || newState.halfmove >= 100
+
+    try {
+      await api.chessMove(room.id, {
+        move_from: from, move_to: to, promotion: promotion || null,
+        fen_after: newFen, is_checkmate: isCheckmate, is_stalemate: isStalemate, is_draw: isDraw
+      })
+      setSelectedSq(null)
+      setPromotionPending(null)
+      loadRoom(room.id)
+      onPointsChange?.()
+    } catch (e) { alert(e.message) }
+  }
+
+  const handleResign = async () => {
+    if (!confirm('기권하시겠습니까?')) return
+    try { await api.chessResign(room.id); loadRoom(room.id); onPointsChange?.() } catch (e) { alert(e.message) }
+  }
+
+  const handleCancel = async () => {
+    try { await api.cancelChessRoom(room.id); goBack() } catch (e) { alert(e.message) }
+  }
+
+  const handleRematch = async () => {
+    try { await api.chessRematch(room.id); loadRoom(room.id); onPointsChange?.(); startPolling(room.id) } catch (e) { alert(e.message) }
+  }
+
+  const handleUndoRequest = async () => {
+    try { await api.chessUndoRequest(room.id); loadRoom(room.id) } catch (e) { alert(e.message) }
+  }
+
+  const handleUndoResponse = async (accept) => {
+    try {
+      await api.chessUndoResponse(room.id, { accept })
+      loadRoom(room.id)
+    } catch (e) { alert(e.message) }
+  }
+
+  const loadLeaderboard = async () => {
+    try { const lb = await api.getMmrLeaderboard('chess'); setLeaderboard(lb); setShowLeaderboard(true) } catch (e) { alert(e.message) }
+  }
+  const loadHistory = async () => {
+    try { const h = await api.getChessHistory(); setHistory(h); setShowHistory(true) } catch (e) { alert(e.message) }
+  }
+
+  const loadSpecBets = async (roomId) => {
+    try { const data = await api.getSpectatorBets('chess', roomId); setSpecBets(data) } catch (e) {}
+  }
+
+  const handleSpecBet = async (predictedWinnerId) => {
+    const amt = parseInt(specBetAmount)
+    if (!amt || amt <= 0) return alert('배팅 포인트를 입력하세요')
+    try {
+      await api.placeSpectatorBet('chess', room.id, { predicted_winner_id: predictedWinnerId, amount: amt })
+      setSpecBetAmount('')
+      loadSpecBets(room.id)
+      onPointsChange?.()
+      api.getPoints().then(r => setPoints(r.points)).catch(() => {})
+    } catch (e) { alert(e.message) }
+  }
+
+  if (loading) return <div className="loading">로딩 중...</div>
+
+  // ── Room View ──
+  if (view === 'room' && room) {
+    const isCreator = currentUser?.user_id === room.creator_id
+    const isParticipant = currentUser?.user_id === room.creator_id || currentUser?.user_id === room.opponent_id
+    const myColor = getMyColor()
+    const isMyTurn = room.status === 'PLAYING' && gameState?.turn === myColor
+    const flipped = myColor === 'b'
+
+    const whitePlayer = room.creator_color === 'w' ? room.creator_name : (room.opponent_name || '대기중')
+    const blackPlayer = room.creator_color === 'b' ? room.creator_name : (room.opponent_name || '대기중')
+
+    const renderBoard = () => {
+      const rows = []
+      for (let ri = 0; ri < 8; ri++) {
+        const r = flipped ? 7 - ri : ri
+        for (let ci = 0; ci < 8; ci++) {
+          const c = flipped ? 7 - ci : ci
+          const sq = rcToSq(r, c)
+          const piece = gameState?.squares[r][c]
+          const isLight = (r + c) % 2 === 0
+          const isSelected = sq === selectedSq
+          const isTarget = selectedSq && (validMoves[selectedSq] || []).includes(sq)
+          const isLastMove = room.last_move && (sq === room.last_move.split('-')[0] || sq === room.last_move.split('-')[1])
+          rows.push(
+            <div key={sq}
+              className={`chess-cell ${isLight ? 'light' : 'dark'} ${isSelected ? 'selected' : ''} ${isTarget ? 'target' : ''} ${isLastMove ? 'last-move' : ''}`}
+              onClick={() => handleSquareClick(r, c)}>
+              {piece && <span className={`chess-piece ${isWhite(piece) ? 'white-piece' : 'black-piece'}`}>{PIECE_UNICODE[piece]}</span>}
+              {isTarget && !piece && <div className="move-dot" />}
+              {isTarget && piece && <div className="capture-ring" />}
+              {ci === 0 && <span className="chess-coord-row">{8-r}</span>}
+              {ri === 7 && <span className="chess-coord-col">{String.fromCharCode(flipped ? 104-ci : 97+ci)}</span>}
+            </div>
+          )
+        }
+      }
+      return rows
+    }
+
+    return (
+      <div>
+        <button className="btn btn-outline mb-16" onClick={goBack} style={{fontSize:12}}>← 목록으로</button>
+        <div className="card mb-16">
+          <div className="flex-between mb-8">
+            <div className="card-title" style={{margin:0}}>♟️ 체스 #{room.id} (게임 {room.game_number})</div>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              {!isParticipant && room.status === 'PLAYING' && <span className="badge badge-blue">관전 중</span>}
+              <span className={`badge ${room.status === 'PLAYING' ? 'badge-green' : room.status === 'FINISHED' ? 'badge-orange' : 'badge-red'}`}>
+                {room.status === 'PLAYING' ? '진행중' : room.status === 'FINISHED' ? '종료' : room.status === 'WAITING' ? '대기중' : '취소됨'}
+              </span>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:16,flexWrap:'wrap',fontSize:13,color:'var(--text-dim)'}}>
+            <span>백: <strong>{whitePlayer}</strong></span>
+            <span>흑: <strong>{blackPlayer}</strong></span>
+            {room.bet_amount > 0 && <span>베팅: <strong style={{color:'var(--accent-orange)'}}>{fmt(room.bet_amount)}P</strong></span>}
+            <span>수순: {room.move_count}</span>
+            {room.status === 'PLAYING' && (isParticipant
+              ? <span style={{color: isMyTurn ? 'var(--green)' : 'var(--red)'}}>{isMyTurn ? '내 차례' : '상대 차례'} ({gameState?.turn === 'w' ? '백' : '흑'})</span>
+              : <span style={{color:'var(--text-dim)'}}>관전 중 ({gameState?.turn === 'w' ? '백' : '흑'} 차례)</span>
+            )}
+          </div>
+        </div>
+
+        {/* 상대 이름 */}
+        <div style={{textAlign:'center',fontSize:13,marginBottom:4,color:'var(--text-dim)'}}>
+          {flipped ? whitePlayer : blackPlayer} {flipped ? '(백)' : '(흑)'}
+        </div>
+
+        {/* 체스보드 */}
+        <div className="chess-board-wrap">
+          <div className="chess-board">{gameState && renderBoard()}</div>
+        </div>
+
+        {/* 내 이름 */}
+        <div style={{textAlign:'center',fontSize:13,marginTop:4,color:'var(--text-dim)'}}>
+          {flipped ? blackPlayer : whitePlayer} {flipped ? '(흑)' : '(백)'}
+        </div>
+
+        {/* 프로모션 선택 */}
+        {promotionPending && (
+          <div className="card mb-16" style={{textAlign:'center'}}>
+            <div style={{fontSize:14,marginBottom:8}}>프로모션 선택</div>
+            <div style={{display:'flex',justifyContent:'center',gap:12}}>
+              {['q','r','b','n'].map(p => (
+                <button key={p} className="btn btn-primary chess-promo-btn"
+                  onClick={() => executeMove(promotionPending.from, promotionPending.to, p)}>
+                  {PIECE_UNICODE[myColor === 'w' ? p.toUpperCase() : p]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 관전 배팅 (관전자 전용) */}
+        {!isParticipant && room.status === 'PLAYING' && (
+          <div className="card mb-16">
+            <div className="card-title" style={{margin:'0 0 8px'}}>{e('🎯','')} 관전 배팅</div>
+            {specBets?.my_bet ? (
+              <div style={{fontSize:13,color:'var(--text-dim)'}}>
+                이미 배팅 완료: <strong>{specBets.my_bet.predicted_winner_name}</strong>에 <strong>{fmt(specBets.my_bet.amount)}P</strong>
+              </div>
+            ) : (
+              <div>
+                <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
+                  <input type="number" placeholder="포인트" value={specBetAmount} onChange={e => setSpecBetAmount(e.target.value)}
+                    style={{width:120}} />
+                  <button className="btn btn-primary btn-sm" onClick={() => handleSpecBet(room.creator_id)}>
+                    {whitePlayer === room.creator_name ? '백' : '흑'} {room.creator_name} 예측
+                  </button>
+                  <button className="btn btn-sell btn-sm" onClick={() => handleSpecBet(room.opponent_id)}>
+                    {whitePlayer === room.creator_name ? '흑' : '백'} {room.opponent_name} 예측
+                  </button>
+                </div>
+                <div style={{fontSize:11,color:'var(--text-dim)'}}>보유: {fmt(points)}P · 적중 시 배당 비례 배분</div>
+              </div>
+            )}
+            {specBets && specBets.bets.length > 0 && (
+              <div style={{marginTop:8,fontSize:12}}>
+                <div style={{color:'var(--text-dim)',marginBottom:4}}>배팅 현황 (총 {fmt(specBets.total_pool)}P)</div>
+                {specBets.bets.filter(b => b.status === 'PENDING').map(b => (
+                  <div key={b.id} style={{display:'flex',gap:8,padding:'2px 0'}}>
+                    <span>{b.nickname}</span>
+                    <span style={{color:'var(--accent-orange)'}}>{fmt(b.amount)}P</span>
+                    <span style={{color:'var(--text-dim)'}}>→ {b.predicted_winner_name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 관전 배팅 결과 (종료 시) */}
+        {!isParticipant && room.status === 'FINISHED' && specBets?.my_bet && (
+          <div className="card mb-16" style={{textAlign:'center'}}>
+            <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>
+              {specBets.my_bet.status === 'WON' ? `${e('🎯','')} 관전 배팅 적중! +${fmt(specBets.my_bet.payout - specBets.my_bet.amount)}P` :
+               specBets.my_bet.status === 'LOST' ? '관전 배팅 실패' :
+               specBets.my_bet.status === 'REFUNDED' ? `관전 배팅 환불 +${fmt(specBets.my_bet.amount)}P` : ''}
+            </div>
+          </div>
+        )}
+
+        {/* 대기 안내 */}
+        {room.status === 'WAITING' && (
+          <div className="card mb-16" style={{textAlign:'center',padding:'24px 16px'}}>
+            <div style={{fontSize:16,color:'var(--text-dim)',marginBottom:8}}>상대방을 기다리는 중...</div>
+            <div style={{fontSize:12,color:'var(--text-dim)'}}>다른 유저가 참가하면 게임이 시작됩니다</div>
+          </div>
+        )}
+
+        {/* 결과 */}
+        {room.status === 'FINISHED' && (
+          <div className="card mb-16" style={{textAlign:'center'}}>
+            {room.winner_id ? (
+              <div>
+                <div style={{fontSize:18,fontWeight:700,marginBottom:8}}>
+                  {room.winner_id === currentUser?.user_id ? `${e('🎉','')} 승리!` : isParticipant ? '패배' : `${room.winner_name || '승자'} 승리`}
+                </div>
+                <div style={{fontSize:13,color:'var(--text-dim)'}}>
+                  사유: {room.win_reason === 'checkmate' ? '체크메이트' : room.win_reason === 'resign' ? '기권' : room.win_reason}
+                  {room.bet_amount > 0 && isParticipant && ` | ${room.winner_id === currentUser?.user_id ? '+' : '-'}${fmt(room.bet_amount)}P`}
+                </div>
+              </div>
+            ) : (
+              <div style={{fontSize:18,fontWeight:700}}>무승부 ({room.win_reason === 'draw' ? '스테일메이트/50수' : room.win_reason})</div>
+            )}
+            {isParticipant && (
+              <button className="btn btn-primary mt-12" onClick={handleRematch}>{e('🔄','')} 한판더하기</button>
+            )}
+          </div>
+        )}
+
+        {room.status === 'PLAYING' && isParticipant && (() => {
+          const isMyTurnNow = gameState?.turn === myColor
+          const hasPendingUndo = room.undo_request_by != null
+          const iMyUndoReq = room.undo_request_by === currentUser?.user_id
+          const isOpponentUndoReq = hasPendingUndo && !iMyUndoReq
+          const canRequestUndo = !isMyTurnNow && !hasPendingUndo && room.move_count > 0
+          return (
+            <div style={{textAlign:'center',marginTop:12,display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap'}}>
+              {isOpponentUndoReq && (
+                <div className="card" style={{padding:'10px 16px',display:'inline-flex',gap:8,alignItems:'center'}}>
+                  <span style={{fontSize:13}}>상대가 한수 무르기를 요청했습니다</span>
+                  <button className="btn btn-primary btn-sm" onClick={() => handleUndoResponse(true)}>수락</button>
+                  <button className="btn btn-sell btn-sm" onClick={() => handleUndoResponse(false)}>거절</button>
+                </div>
+              )}
+              {iMyUndoReq && (
+                <span style={{fontSize:13,color:'var(--text-dim)',alignSelf:'center'}}>한수 무르기 요청 중...</span>
+              )}
+              {canRequestUndo && (
+                <button className="btn btn-ghost" onClick={handleUndoRequest}>한수 무르기</button>
+              )}
+              <button className="btn btn-sell" onClick={handleResign}>기권</button>
+            </div>
+          )
+        })()}
+        {room.status === 'WAITING' && isCreator && (
+          <div style={{textAlign:'center',marginTop:12}}>
+            <button className="btn btn-sell" onClick={handleCancel}>방 취소</button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── List View ──
+  return (
+    <div>
+      <div className="flex-between mb-16">
+        <h2 style={{margin:0}}>♟️ 체스</h2>
+        <div style={{display:'flex',gap:8}}>
+          {myMmr && <span className="badge badge-blue" style={{alignSelf:'center'}}>MMR {myMmr.mmr}</span>}
+          <button className="btn btn-ghost" onClick={loadLeaderboard}>{e('🏆','')} 리더보드</button>
+          <button className="btn btn-ghost" onClick={loadHistory}>{e('📜','')} 전적</button>
+          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ 방 만들기</button>
+        </div>
+      </div>
+
+      {showCreate && (
+        <div className="card mb-16">
+          <div className="card-title">방 만들기</div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <input type="number" placeholder="베팅 포인트 (0=무료)" value={betAmount} onChange={e => setBetAmount(e.target.value)} style={{width:160}} />
+            <button className="btn btn-primary" onClick={handleCreate}>생성</button>
+            <button className="btn btn-ghost" onClick={() => setShowCreate(false)}>취소</button>
+          </div>
+          <div style={{fontSize:12,color:'var(--text-dim)',marginTop:4}}>보유: {fmt(points)}P | 색상은 랜덤 배정됩니다</div>
+        </div>
+      )}
+
+      {rooms.length === 0 ? (
+        <div className="card" style={{textAlign:'center',color:'var(--text-dim)'}}>대기 중인 방이 없습니다</div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>방장</th><th>상대</th><th>베팅</th><th>상태</th><th></th></tr></thead>
+            <tbody>
+              {rooms.map(r => (
+                <tr key={r.id}>
+                  <td>{r.id}</td>
+                  <td>{r.creator_name}</td>
+                  <td>{r.opponent_name || '-'}</td>
+                  <td>{r.bet_amount > 0 ? `${fmt(r.bet_amount)}P` : '무료'}</td>
+                  <td><span className={`badge ${r.status === 'PLAYING' ? 'badge-green' : 'badge-orange'}`}>{r.status === 'PLAYING' ? '진행중' : '대기중'}</span></td>
+                  <td>
+                    {r.status === 'WAITING' && r.creator_id !== currentUser?.user_id && (
+                      <button className="btn btn-primary btn-sm" onClick={() => handleJoin(r.id)}>참가</button>
+                    )}
+                    {(r.creator_id === currentUser?.user_id || r.opponent_id === currentUser?.user_id) && (
+                      <button className="btn btn-ghost btn-sm" onClick={() => enterRoom(r.id)}>입장</button>
+                    )}
+                    {r.status === 'PLAYING' && r.creator_id !== currentUser?.user_id && r.opponent_id !== currentUser?.user_id && (
+                      <button className="btn btn-ghost btn-sm" onClick={() => enterRoom(r.id)}>관전</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* 리더보드 모달 */}
+      {showLeaderboard && (
+        <div className="modal-overlay" onClick={() => setShowLeaderboard(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="flex-between mb-16">
+              <h3 style={{margin:0}}>{e('🏆','')} 체스 MMR 리더보드</h3>
+              <button className="btn btn-ghost" onClick={() => setShowLeaderboard(false)}>✕</button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>#</th><th>닉네임</th><th>MMR</th><th>승</th><th>패</th><th>무</th><th>승률</th></tr></thead>
+                <tbody>
+                  {leaderboard.map((r, i) => (
+                    <tr key={r.user_id} className={r.user_id === currentUser?.user_id ? 'highlight-row' : ''}>
+                      <td className={rankClass(i+1)}>{i+1}</td>
+                      <td>{r.nickname}</td>
+                      <td><strong>{r.mmr}</strong></td>
+                      <td style={{color:'var(--green)'}}>{r.wins}</td>
+                      <td style={{color:'var(--red)'}}>{r.losses}</td>
+                      <td>{r.draws}</td>
+                      <td>{r.wins + r.losses > 0 ? ((r.wins / (r.wins + r.losses)) * 100).toFixed(1) + '%' : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 전적 모달 */}
+      {showHistory && (
+        <div className="modal-overlay" onClick={() => setShowHistory(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="flex-between mb-16">
+              <h3 style={{margin:0}}>{e('📜','')} 체스 전적</h3>
+              <button className="btn btn-ghost" onClick={() => setShowHistory(false)}>✕</button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>상대</th><th>결과</th><th>수순</th><th>베팅</th><th>시간</th></tr></thead>
+                <tbody>
+                  {history.map(r => {
+                    const isWin = r.winner_id === currentUser?.user_id
+                    const isDraw = !r.winner_id
+                    const opponent = r.creator_id === currentUser?.user_id ? r.opponent_name : r.creator_name
+                    return (
+                      <tr key={r.id}>
+                        <td>{opponent}</td>
+                        <td style={{color: isDraw ? 'var(--text-dim)' : isWin ? 'var(--green)' : 'var(--red)', fontWeight:700}}>
+                          {isDraw ? '무승부' : isWin ? '승' : '패'}
+                        </td>
+                        <td>{r.move_count}수</td>
+                        <td>{r.bet_amount > 0 ? `${fmt(r.bet_amount)}P` : '-'}</td>
+                        <td style={{fontSize:11,color:'var(--text-dim)'}}>{r.finished_at?.slice(5,16)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // GIFT MODAL (포인트 선물)
 // ═══════════════════════════════════════════════
 function GiftModal({ onClose, onSuccess }) {
@@ -2485,9 +3846,253 @@ function Ticker() {
 
 
 // ═══════════════════════════════════════════════
+// LOTTO PAGE (로또)
+// ═══════════════════════════════════════════════
+function LottoPage({ onPointsChange }) {
+  const [status, setStatus] = useState(null)
+  const [history, setHistory] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [picking, setPicking] = useState(false)
+  const [countdown, setCountdown] = useState('')
+  const [msg, setMsg] = useState('')
+
+  const loadStatus = async () => {
+    try {
+      const data = await api.getLottoStatus()
+      setStatus(data)
+    } catch {}
+    setLoading(false)
+  }
+
+  const loadHistory = async () => {
+    try {
+      const data = await api.getLottoHistory()
+      setHistory(data)
+    } catch {}
+  }
+
+  useEffect(() => { loadStatus(); loadHistory() }, [])
+
+  // 카운트다운
+  useEffect(() => {
+    const tick = () => {
+      const now = new Date()
+      const target = new Date()
+      target.setHours(15, 55, 0, 0)
+      if (now >= target) {
+        setCountdown('추첨 완료')
+        return
+      }
+      const diff = target - now
+      const h = Math.floor(diff / 3600000)
+      const m = Math.floor((diff % 3600000) / 60000)
+      const s = Math.floor((diff % 60000) / 1000)
+      setCountdown(`${h}시간 ${m}분 ${s}초`)
+    }
+    tick()
+    const timer = setInterval(tick, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const handlePick = async (num) => {
+    if (picking) return
+    if (!status) return
+    if (status.my_numbers.includes(num)) {
+      // 이미 선택된 번호 → 취소
+      setPicking(true)
+      try {
+        await api.deleteLottoPick(num)
+        setMsg(`${num}번 취소됨`)
+        await loadStatus()
+      } catch (err) { setMsg(err.message) }
+      setPicking(false)
+      return
+    }
+    const remaining = status.max_tickets - status.my_numbers.length
+    if (remaining <= 0) {
+      setMsg(`티켓을 모두 사용했습니다 (${status.my_rank}위 → ${status.max_tickets}장)`)
+      return
+    }
+    setPicking(true)
+    try {
+      await api.pickLottoNumbers([num])
+      setMsg(`${num}번 선택!`)
+      await loadStatus()
+    } catch (err) { setMsg(err.message) }
+    setPicking(false)
+  }
+
+  if (loading) return <div className="loading">로딩 중...</div>
+  if (!status) return <div className="loading">로또 정보를 불러올 수 없습니다</div>
+
+  const isDrawn = countdown === '추첨 완료'
+  const lastResult = status.last_result
+
+  return (
+    <div className="lotto-page">
+      {/* 풀 & 카운트다운 */}
+      <div className="card lotto-pool-card">
+        <div className="lotto-round">{e('🎱','')} {status.round_number}회차 로또</div>
+        <div className="lotto-pool-amount">{status.pool_amount.toLocaleString()}P</div>
+        <div className="lotto-countdown">
+          {isDrawn ? '오늘 추첨 완료' : `추첨까지 ${countdown}`}
+        </div>
+        <div className="lotto-tax-info">
+          매일 15:55 보유세 10% 징수 (50% 소각 / 50% 로또풀)
+        </div>
+        {status.tax_info && (
+          <div className="lotto-tax-detail">
+            오늘 징수: {status.tax_info.total_collected?.toLocaleString()}P
+            (소각 {status.tax_info.burned?.toLocaleString()}P / 로또 {status.tax_info.to_lotto?.toLocaleString()}P)
+          </div>
+        )}
+      </div>
+
+      {/* 내 티켓 현황 */}
+      <div className="card">
+        <div className="card-title">
+          내 티켓 (순위 {status.my_rank}위 → {status.max_tickets}장)
+          <span className="lotto-ticket-count"> [{status.my_numbers.length}/{status.max_tickets}]</span>
+        </div>
+        {status.my_numbers.length > 0 ? (
+          <div className="lotto-my-picks">
+            {status.my_numbers.map(n => (
+              <span key={n} className="lotto-my-num">{n}</span>
+            ))}
+          </div>
+        ) : (
+          <div style={{fontSize:13,color:'var(--text-dim)'}}>아래에서 번호를 선택하세요</div>
+        )}
+        {msg && <div className="mt-8" style={{fontSize:13}}>{msg}</div>}
+      </div>
+
+      {/* 번호 선택 그리드 */}
+      {!isDrawn && (
+        <div className="card">
+          <div className="card-title">번호 선택 (1~46)</div>
+          <div className="lotto-grid">
+            {Array.from({length: 46}, (_, i) => i + 1).map(n => (
+              <button
+                key={n}
+                className={`lotto-num ${status.my_numbers.includes(n) ? 'lotto-num-picked' : ''}`}
+                onClick={() => handlePick(n)}
+                disabled={picking}
+              >{n}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 최근 추첨 결과 */}
+      {lastResult && (
+        <div className="card lotto-result-card">
+          <div className="card-title">{e('🎱','')} 최근 추첨 결과</div>
+          <div className="lotto-result">
+            <div className="lotto-result-round">{lastResult.round_number}회</div>
+            <div className="lotto-result-number">{lastResult.winning_number}</div>
+            <div className="lotto-result-info">
+              {lastResult.status === 'DRAWN'
+                ? `당첨! ${lastResult.winner_names} (+${lastResult.payout_per_winner?.toLocaleString()}P)`
+                : `당첨자 없음 — ${lastResult.pool_amount?.toLocaleString()}P 이월`
+              }
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 히스토리 */}
+      <div className="card">
+        <div className="card-title">추첨 기록</div>
+        {history.length === 0 ? (
+          <div style={{fontSize:13,color:'var(--text-dim)'}}>아직 추첨 기록이 없습니다</div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>회차</th><th>날짜</th><th>당첨번호</th><th>상금풀</th><th>당첨자</th></tr></thead>
+              <tbody>
+                {history.map(r => (
+                  <tr key={r.round_number} className={r.status === 'DRAWN' ? 'lotto-row-won' : ''}>
+                    <td>{r.round_number}</td>
+                    <td>{r.draw_date}</td>
+                    <td><span className="lotto-winning-num">{r.winning_number}</span></td>
+                    <td className="text-right">{r.pool_amount?.toLocaleString()}P</td>
+                    <td>{r.status === 'DRAWN'
+                      ? `${r.winner_names} (+${r.payout_per_winner?.toLocaleString()}P)`
+                      : '이월'
+                    }</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+// ═══════════════════════════════════════════════
+// PATCH NOTES PAGE (패치노트)
+// ═══════════════════════════════════════════════
+const PATCH_NOTES = [
+  {
+    date: '2026-04-09',
+    title: 'v1.6.0 — 관전 배팅 & 주간 보상 시스템',
+    changes: [
+      { tag: '신규', text: '관전 배팅 — 오목/체스 관전 시 승자 예측 배팅 가능! 적중 시 참여자끼리 배당 비례 배분' },
+      { tag: '신규', text: '주간 보상 — 오목 MMR 상위 3명, 노들 주간 상위 3명에게 포인트 보상 (1등 3,000P / 2등 2,000P / 3등 1,000P)' },
+      { tag: '신규', text: '노들 주간 리더보드 — 주간 풀이 수 기준 랭킹 확인 가능' },
+      { tag: '신규', text: '전체 포인트 초기화 — 관리자가 모든 유저 포인트를 10,000P로 리셋 가능' },
+      { tag: '삭제', text: '해피아워 시스템 완전 삭제 — 인플레이션 방지' },
+    ],
+  },
+  {
+    date: '2026-04-01',
+    title: 'v1.5.0 — 로또 시스템 & 경제 밸런스 패치',
+    changes: [
+      { tag: '신규', text: '로또 시스템 추가 — 매일 15:55 추첨, 1~46번 중 번호 선택. 순위별 티켓 차등 지급 (1~4위 1장, 5~8위 3장, 9위~ 5장)' },
+      { tag: '신규', text: '보유세 도입 — 매일 전체 유저 포인트의 10%를 징수하여 50%는 소각, 50%는 로또 상금풀로 투입합니다. 양극화 해소와 디플레이션을 위한 조치입니다' },
+      { tag: '조정', text: '가위바위보 배당 1.98배 → 1.97배로 조정 — 1%가 로또 풀에 적립됩니다' },
+      { tag: '조정', text: '가위바위보 잭팟 레이크 5% → 4%로 조정 — 로또 도입에 따른 레이크 재분배입니다' },
+      { tag: '삭제', text: '해피아워 시스템 삭제 — 인플레이션 방지를 위해 해피아워를 완전히 제거했습니다' },
+      { tag: '조정', text: '연승/연패 채팅 표기 기준을 5연승 → 10연승, 3연승(주사위) → 10연승 이상으로 변경합니다' },
+      { tag: '신규', text: '채팅 관리 기능 — 관리자가 채팅 전체 초기화 및 개별 메시지 삭제가 가능합니다' },
+      { tag: '개선', text: '채팅 스크롤 개선 — 채팅창을 열면 항상 최신 메시지가 바로 보이도록 수정했습니다' },
+      { tag: '신규', text: '패치노트 페이지 추가 — 업데이트 히스토리를 확인할 수 있습니다' },
+    ],
+  },
+]
+
+function PatchNotesPage() {
+  return (
+    <div className="patchnotes-page">
+      {PATCH_NOTES.map((patch, i) => (
+        <div key={i} className="card patchnote-card">
+          <div className="patchnote-header">
+            <span className="patchnote-date">{patch.date}</span>
+            <span className="patchnote-title">{patch.title}</span>
+          </div>
+          <ul className="patchnote-list">
+            {patch.changes.map((c, j) => (
+              <li key={j} className="patchnote-item">
+                <span className={`patchnote-tag patchnote-tag-${c.tag}`}>{c.tag}</span>
+                <span>{c.text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+
+// ═══════════════════════════════════════════════
 // CHAT PANEL (채팅)
 // ═══════════════════════════════════════════════
 function ChatPanel({ visible, onClose }) {
+  const chatUser = api.getUser()
   const [messages, setMessages] = useState([])
   const [lastId, setLastId] = useState(0)
   const [input, setInput] = useState('')
@@ -2496,8 +4101,8 @@ function ChatPanel({ visible, onClose }) {
   const containerRef = useRef(null)
   const shouldAutoScroll = useRef(true)
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  const scrollToBottom = (instant = false) => {
+    messagesEndRef.current?.scrollIntoView({ behavior: instant ? 'instant' : 'smooth' })
   }
 
   // 스크롤 위치 감지 — 맨 아래 근처면 auto-scroll
@@ -2534,8 +4139,18 @@ function ChatPanel({ visible, onClose }) {
 
   // 새 메시지 auto-scroll
   useEffect(() => {
-    if (shouldAutoScroll.current) scrollToBottom()
+    if (shouldAutoScroll.current) {
+      requestAnimationFrame(() => scrollToBottom())
+    }
   }, [messages])
+
+  // 최초 열릴 때 맨 아래로
+  useEffect(() => {
+    if (visible && messages.length > 0) {
+      shouldAutoScroll.current = true
+      requestAnimationFrame(() => scrollToBottom(true))
+    }
+  }, [visible])
 
   const handleSend = async () => {
     const msg = input.trim()
@@ -2546,6 +4161,13 @@ function ChatPanel({ visible, onClose }) {
       setInput('')
     } catch {}
     setSending(false)
+  }
+
+  const handleDeleteMsg = async (msgId) => {
+    try {
+      await api.adminDeleteChatMessage(msgId)
+      setMessages(prev => prev.filter(m => m.id !== msgId))
+    } catch {}
   }
 
   const handleKeyDown = (ev) => {
@@ -2571,6 +4193,7 @@ function ChatPanel({ visible, onClose }) {
             )}
             <span className="chat-text">{m.message}</span>
             <span className="chat-time">{m.created_at?.slice(11, 16)}</span>
+            {chatUser?.is_admin && <button className="chat-delete" onClick={() => handleDeleteMsg(m.id)} title="삭제">&times;</button>}
           </div>
         ))}
         <div ref={messagesEndRef} />
@@ -2694,6 +4317,8 @@ export default function App() {
     { id: 'dice', label: `${e('🎲','')} 주사위` },
     { id: 'gacha', label: `${e('🎰','')} 가챠` },
     { id: 'nordle', label: `${e('🔢','')} 노들` },
+    { id: 'omok', label: `${e('⚫','')} 오목` },
+    { id: 'chess', label: `♟️ 체스` },
     { id: 'shop', label: `${e('🏪','')} 상점` },
   ]
   if (user?.is_admin) tabs.push({ id: 'admin', label: `${e('⚙️','')} 관리` })
@@ -2710,6 +4335,8 @@ export default function App() {
       case 'dice': return <DicePage onPointsChange={refreshPoints} />
       case 'gacha': return <GachaPage onPointsChange={refreshPoints} />
       case 'nordle': return <NordlePage />
+      case 'omok': return <OmokPage onPointsChange={refreshPoints} />
+      case 'chess': return <ChessPage onPointsChange={refreshPoints} />
       case 'shop': return <ShopPage onPointsChange={refreshPoints} />
       case 'admin': return <AdminPage />
       default: return <DashboardPage />

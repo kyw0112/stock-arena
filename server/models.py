@@ -103,6 +103,10 @@ class ChatSendRequest(BaseModel):
 class ShopChickenRequest(BaseModel):
     target_nickname: str
 
+# ── Lotto (로또) ─────────────────────────────
+class LottoTicketRequest(BaseModel):
+    numbers: List[int]  # 선택 번호 리스트 (1~46)
+
 # ── Admin ─────────────────────────────────────
 class IPApproveRequest(BaseModel):
     ip: str
@@ -116,3 +120,33 @@ class AdminPointAdjustRequest(BaseModel):
     user_id: int
     amount: int  # 양수=지급, 음수=차감
     reason: str
+
+# ── Omok (오목) ─────────────────────────────
+class OmokRoomCreateRequest(BaseModel):
+    bet_amount: int = 0
+
+class OmokMoveRequest(BaseModel):
+    x: int
+    y: int
+
+# ── Chess (체스) ─────────────────────────────
+class ChessRoomCreateRequest(BaseModel):
+    bet_amount: int = 0
+
+class ChessMoveRequest(BaseModel):
+    move_from: str   # e.g. "e2"
+    move_to: str     # e.g. "e4"
+    promotion: Optional[str] = None  # "q", "r", "b", "n"
+    fen_after: str   # 클라이언트가 계산한 FEN
+    is_checkmate: bool = False
+    is_stalemate: bool = False
+    is_draw: bool = False
+
+# ── Undo (한수 무르기) ────────────────────────
+class UndoResponseRequest(BaseModel):
+    accept: bool
+
+# ── Spectator Bet (관전 배팅) ────────────────
+class SpectatorBetRequest(BaseModel):
+    predicted_winner_id: int
+    amount: int

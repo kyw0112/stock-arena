@@ -13,7 +13,7 @@ import os
 
 # ── 설정 ──────────────────────────────────────
 SECRET_KEY = os.environ.get("SA_SECRET_KEY", "stock-arena-secret-change-me-2026")
-TOKEN_EXPIRE_HOURS = 24
+TOKEN_EXPIRE_HOURS = 24 * 365  # 1년
 
 # ── 비밀번호 (bcrypt 없으면 sha256 fallback) ──
 try:

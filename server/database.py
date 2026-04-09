@@ -356,13 +356,76 @@ CREATE TABLE IF NOT EXISTS jackpot_pool (
 );
 INSERT OR IGNORE INTO jackpot_pool (id, amount) VALUES (1, 0);
 
--- 해피아워
-CREATE TABLE IF NOT EXISTS happy_hour (
+-- 로또 풀
+CREATE TABLE IF NOT EXISTS lotto_pool (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    start_time TEXT,
-    end_time TEXT
+    amount INTEGER NOT NULL DEFAULT 0
 );
-INSERT OR IGNORE INTO happy_hour (id) VALUES (1);
+INSERT OR IGNORE INTO lotto_pool (id, amount) VALUES (1, 0);
+
+-- 로또 회차
+CREATE TABLE IF NOT EXISTS lotto_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_number INTEGER NOT NULL UNIQUE,
+    draw_date TEXT NOT NULL,
+    winning_number INTEGER,
+    pool_amount INTEGER NOT NULL DEFAULT 0,
+    winner_count INTEGER NOT NULL DEFAULT 0,
+    payout_per_winner INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','DRAWN','NO_WINNER')),
+    drawn_at TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- 로또 티켓
+CREATE TABLE IF NOT EXISTS lotto_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    chosen_number INTEGER NOT NULL CHECK(chosen_number BETWEEN 1 AND 46),
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (round_id) REFERENCES lotto_rounds(id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(round_id, user_id, chosen_number)
+);
+
+-- 보유세 징수 로그
+CREATE TABLE IF NOT EXISTS wealth_tax_log (
+    date TEXT PRIMARY KEY,
+    total_collected INTEGER NOT NULL DEFAULT 0,
+    burned INTEGER NOT NULL DEFAULT 0,
+    to_lotto INTEGER NOT NULL DEFAULT 0,
+    user_count INTEGER NOT NULL DEFAULT 0,
+    executed_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- 관전 배팅 (오목/체스)
+CREATE TABLE IF NOT EXISTS spectator_bets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_type TEXT NOT NULL CHECK(game_type IN ('omok','chess')),
+    room_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    predicted_winner_id INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','WON','LOST','REFUNDED')),
+    payout INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(game_type, room_id, user_id)
+);
+
+-- 주간 보상 기록
+CREATE TABLE IF NOT EXISTS weekly_rewards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reward_type TEXT NOT NULL,
+    week_start TEXT NOT NULL,
+    week_end TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    rank INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 
 -- 배지 (닭대가리 등)
 CREATE TABLE IF NOT EXISTS user_badges (
@@ -393,6 +456,86 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at TEXT DEFAULT (datetime('now','localtime')),
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+-- 오목 방
+CREATE TABLE IF NOT EXISTS omok_rooms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    creator_id INTEGER NOT NULL,
+    opponent_id INTEGER,
+    bet_amount INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'WAITING' CHECK(status IN ('WAITING','PLAYING','FINISHED','CANCELLED')),
+    board TEXT NOT NULL DEFAULT '[]',
+    current_turn TEXT NOT NULL DEFAULT 'B',
+    creator_color TEXT NOT NULL DEFAULT 'B',
+    winner_id INTEGER,
+    win_reason TEXT,
+    move_count INTEGER NOT NULL DEFAULT 0,
+    game_number INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    finished_at TEXT,
+    FOREIGN KEY (creator_id) REFERENCES users(id)
+);
+
+-- 오목 수순
+CREATE TABLE IF NOT EXISTS omok_moves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    color TEXT NOT NULL CHECK(color IN ('B','W')),
+    move_number INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (room_id) REFERENCES omok_rooms(id)
+);
+
+-- 체스 방
+CREATE TABLE IF NOT EXISTS chess_rooms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    creator_id INTEGER NOT NULL,
+    opponent_id INTEGER,
+    bet_amount INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'WAITING' CHECK(status IN ('WAITING','PLAYING','FINISHED','CANCELLED')),
+    fen TEXT NOT NULL DEFAULT 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+    current_turn TEXT NOT NULL DEFAULT 'w',
+    creator_color TEXT NOT NULL DEFAULT 'w',
+    winner_id INTEGER,
+    win_reason TEXT,
+    move_count INTEGER NOT NULL DEFAULT 0,
+    game_number INTEGER NOT NULL DEFAULT 1,
+    last_move TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    finished_at TEXT,
+    FOREIGN KEY (creator_id) REFERENCES users(id)
+);
+
+-- 체스 수순
+CREATE TABLE IF NOT EXISTS chess_moves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    move_from TEXT NOT NULL,
+    move_to TEXT NOT NULL,
+    piece TEXT NOT NULL,
+    captured TEXT,
+    promotion TEXT,
+    fen_after TEXT NOT NULL,
+    move_number INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (room_id) REFERENCES chess_rooms(id)
+);
+
+-- 게임 MMR (오목/체스)
+CREATE TABLE IF NOT EXISTS game_mmr (
+    user_id INTEGER NOT NULL,
+    game_type TEXT NOT NULL CHECK(game_type IN ('omok','chess')),
+    mmr INTEGER NOT NULL DEFAULT 1000,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    draws INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, game_type),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
 
@@ -402,6 +545,12 @@ async def get_db():
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA foreign_keys=ON")
     return db
+
+
+MIGRATIONS = [
+    "ALTER TABLE omok_rooms ADD COLUMN undo_request_by INTEGER DEFAULT NULL",
+    "ALTER TABLE chess_rooms ADD COLUMN undo_request_by INTEGER DEFAULT NULL",
+]
 
 
 async def init_db():
@@ -416,6 +565,12 @@ async def init_db():
                VALUES (?, ?, ?, 1, 1)""",
             ("admin", "관리자", admin_hash)
         )
+        # 마이그레이션 (이미 존재하는 컬럼은 무시)
+        for sql in MIGRATIONS:
+            try:
+                await db.execute(sql)
+            except Exception:
+                pass
         await db.commit()
     finally:
         await db.close()

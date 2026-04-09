@@ -10,10 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
+import asyncio
 import json
 import os
+import pathlib
 import re
 import random
+import shutil
 from datetime import datetime as dt, timedelta
 
 from database import get_db, init_db, current_month, INITIAL_SEED, FEE_RATE, TAX_RATE
@@ -23,10 +26,204 @@ from models import *
 
 # ── App Setup ─────────────────────────────────
 
+PRICE_DATA_DIR = pathlib.Path(__file__).parent / "price_data"
+PRICE_DONE_DIR = PRICE_DATA_DIR / "done"
+
+
+async def process_price_file(filepath: pathlib.Path):
+    """price_data/ 폴더의 JSON 파일을 읽어 종가 입력 + 체결 처리"""
+    try:
+        data = json.loads(filepath.read_text(encoding="utf-8"))
+        date = data["date"]
+        prices = data["prices"]
+        month = date[:7]
+
+        db = await get_db()
+        try:
+            settled_count = 0
+
+            # 1. 종가 저장
+            for code, price in prices.items():
+                await db.execute(
+                    "INSERT OR REPLACE INTO prices (stock_code, date, close_price) VALUES (?, ?, ?)",
+                    (code, date, price)
+                )
+
+            # 2. PENDING 주문 체결
+            pending = await db.execute_fetchall(
+                "SELECT * FROM orders WHERE status = 'PENDING' AND month = ?", (month,)
+            )
+
+            for order in pending:
+                stock_code = order["stock_code"]
+                if stock_code not in prices:
+                    continue
+
+                price = prices[stock_code]
+                uid = order["user_id"]
+                qty = order["quantity"]
+                otype = order["order_type"]
+
+                bal = await db.execute_fetchall(
+                    "SELECT cash FROM balances WHERE user_id = ? AND month = ?", (uid, month)
+                )
+                if not bal:
+                    await db.execute(
+                        "INSERT INTO balances (user_id, month, cash) VALUES (?, ?, ?)",
+                        (uid, month, INITIAL_SEED)
+                    )
+                    cash = INITIAL_SEED
+                else:
+                    cash = bal[0]["cash"]
+
+                if otype == "BUY":
+                    cost = price * qty
+                    fee = cost * FEE_RATE
+                    total_cost = cost + fee
+
+                    if cash < total_cost:
+                        await db.execute(
+                            "UPDATE orders SET status = 'CANCELLED' WHERE id = ?", (order["id"],)
+                        )
+                        continue
+
+                    cash -= total_cost
+                    await db.execute(
+                        "UPDATE balances SET cash = ? WHERE user_id = ? AND month = ?",
+                        (cash, uid, month)
+                    )
+
+                    existing = await db.execute_fetchall(
+                        "SELECT quantity, avg_price FROM portfolios WHERE user_id = ? AND stock_code = ? AND month = ?",
+                        (uid, stock_code, month)
+                    )
+                    if existing:
+                        old_qty = existing[0]["quantity"]
+                        old_avg = existing[0]["avg_price"]
+                        new_qty = old_qty + qty
+                        new_avg = ((old_avg * old_qty) + (price * qty)) / new_qty if new_qty > 0 else 0
+                        await db.execute(
+                            "UPDATE portfolios SET quantity = ?, avg_price = ? WHERE user_id = ? AND stock_code = ? AND month = ?",
+                            (new_qty, new_avg, uid, stock_code, month)
+                        )
+                    else:
+                        await db.execute(
+                            "INSERT INTO portfolios (user_id, stock_code, quantity, avg_price, month) VALUES (?, ?, ?, ?, ?)",
+                            (uid, stock_code, qty, price, month)
+                        )
+
+                    await db.execute(
+                        "INSERT INTO trade_logs (user_id, stock_code, trade_type, quantity, price, fee, tax, total_amount, month) VALUES (?, ?, 'BUY', ?, ?, ?, 0, ?, ?)",
+                        (uid, stock_code, qty, price, fee, total_cost, month)
+                    )
+
+                elif otype == "SELL":
+                    revenue = price * qty
+                    fee = revenue * FEE_RATE
+                    tax = revenue * TAX_RATE
+                    net = revenue - fee - tax
+
+                    existing = await db.execute_fetchall(
+                        "SELECT quantity, avg_price FROM portfolios WHERE user_id = ? AND stock_code = ? AND month = ?",
+                        (uid, stock_code, month)
+                    )
+                    if not existing or existing[0]["quantity"] < qty:
+                        await db.execute(
+                            "UPDATE orders SET status = 'CANCELLED' WHERE id = ?", (order["id"],)
+                        )
+                        continue
+
+                    new_qty = existing[0]["quantity"] - qty
+                    await db.execute(
+                        "UPDATE portfolios SET quantity = ? WHERE user_id = ? AND stock_code = ? AND month = ?",
+                        (new_qty, uid, stock_code, month)
+                    )
+
+                    cash += net
+                    await db.execute(
+                        "UPDATE balances SET cash = ? WHERE user_id = ? AND month = ?",
+                        (cash, uid, month)
+                    )
+
+                    await db.execute(
+                        "INSERT INTO trade_logs (user_id, stock_code, trade_type, quantity, price, fee, tax, total_amount, month) VALUES (?, ?, 'SELL', ?, ?, ?, ?, ?, ?)",
+                        (uid, stock_code, qty, price, fee, tax, net, month)
+                    )
+
+                await db.execute(
+                    "UPDATE orders SET status = 'FILLED', filled_price = ?, filled_at = ?, fee = ?, tax = ? WHERE id = ?",
+                    (price, date, fee if otype == "BUY" else fee, tax if otype == "SELL" else 0, order["id"])
+                )
+                settled_count += 1
+
+            # 3. 일별 스냅샷
+            users = await db.execute_fetchall(
+                "SELECT id FROM users WHERE is_approved = 1 AND is_admin = 0"
+            )
+            for u in users:
+                uid = u["id"]
+                bal = await db.execute_fetchall(
+                    "SELECT cash FROM balances WHERE user_id = ? AND month = ?", (uid, month)
+                )
+                cash_val = bal[0]["cash"] if bal else INITIAL_SEED
+
+                ports = await db.execute_fetchall(
+                    "SELECT stock_code, quantity FROM portfolios WHERE user_id = ? AND month = ? AND quantity > 0",
+                    (uid, month)
+                )
+                total_eval = 0
+                for p in ports:
+                    pr = await db.execute_fetchall(
+                        "SELECT close_price FROM prices WHERE stock_code = ? ORDER BY date DESC LIMIT 1",
+                        (p["stock_code"],)
+                    )
+                    if pr:
+                        total_eval += pr[0]["close_price"] * p["quantity"]
+
+                total = cash_val + total_eval
+                rate = ((total / INITIAL_SEED) - 1) * 100
+
+                await db.execute(
+                    "INSERT OR REPLACE INTO daily_snapshots (user_id, date, total_value, cash, return_rate, month) VALUES (?, ?, ?, ?, ?, ?)",
+                    (uid, date, total, cash_val, round(rate, 2), month)
+                )
+
+            if settled_count > 0:
+                await insert_ticker(db, f"📊 {date} 매매가 체결되었습니다 ({settled_count}건)", "trade")
+            await check_eval_leader_change(db, month)
+            await check_point_leader_change(db)
+
+            await db.commit()
+            print(f"[price_scan] {filepath.name} 처리 완료: 종가 {len(prices)}건, 체결 {settled_count}건")
+        finally:
+            await db.close()
+
+        # 처리 완료 → done/ 으로 이동
+        PRICE_DONE_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(filepath), str(PRICE_DONE_DIR / filepath.name))
+
+    except Exception as e:
+        print(f"[price_scan] {filepath.name} 처리 실패: {e}")
+
+
+async def price_folder_scanner():
+    """30초마다 price_data/ 폴더를 스캔하여 JSON 파일 처리"""
+    while True:
+        await asyncio.sleep(60)
+        if not PRICE_DATA_DIR.exists():
+            continue
+        for f in sorted(PRICE_DATA_DIR.glob("*.json")):
+            if f.is_file():
+                await process_price_file(f)
+
+
 @asynccontextmanager
 async def lifespan(app):
     await init_db()
+    PRICE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    task = asyncio.create_task(price_folder_scanner())
     yield
+    task.cancel()
 
 app = FastAPI(title="Stock Arena", version="1.0.0", lifespan=lifespan)
 
@@ -929,6 +1126,31 @@ async def admin_month_reset(with_rewards: bool = False, user=Depends(get_admin_u
         await db.close()
 
 
+@app.post("/api/admin/points/reset-all")
+async def admin_reset_all_points(user=Depends(get_admin_user)):
+    """전체 유저 포인트를 10,000P로 초기화"""
+    db = await get_db()
+    try:
+        users = await db.execute_fetchall(
+            "SELECT id, nickname FROM users WHERE is_approved = 1 AND is_admin = 0"
+        )
+        count = 0
+        for u in users:
+            bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (u["id"],))
+            old_points = bal[0]["points"] if bal else 0
+            diff = 10000 - old_points
+            if diff != 0:
+                await log_point_change(db, u["id"], diff, "전체 초기화", f"포인트 전체 초기화 ({old_points}P → 10,000P)")
+            else:
+                # 이미 10000이면 로그만
+                pass
+            count += 1
+        await db.commit()
+        return {"message": f"전체 {count}명 포인트를 10,000P로 초기화 완료"}
+    finally:
+        await db.close()
+
+
 @app.post("/api/admin/points/adjust")
 async def admin_adjust_points(req: AdminPointAdjustRequest, user=Depends(get_admin_user)):
     """관리자 포인트 수동 조정"""
@@ -1688,59 +1910,23 @@ async def point_leaderboard(user=Depends(get_current_user)):
 # RPS (가위바위보)
 # ═══════════════════════════════════════════════
 
-RPS_BASE_RATE = 0.98  # 1.98배 배당 (승리 시 배팅금 × 0.98 수익)
-RPS_HAPPY_MULTIPLIER = 1.5  # 해피아워 시 수익 1.5배
-RPS_JACKPOT_RAKE = 0.07  # 배팅금의 7%가 잭팟 풀로
-
-JACKPOT_CHANCES = [
-    (500, 0.025),  # 500P 이상: 2.5%
-    (200, 0.016),  # 200~499P: 1.6%
-    (100, 0.008),  # 100~199P: 0.8%
-]
-
-
-async def is_happy_hour(db) -> bool:
-    row = await db.execute_fetchall("SELECT start_time, end_time FROM happy_hour WHERE id = 1")
-    if not row or not row[0]["start_time"]:
-        return False
-    now = dt.now().strftime("%Y-%m-%d %H:%M:%S")
-    return row[0]["start_time"] <= now <= row[0]["end_time"]
-
-
-async def maybe_start_happy_hour(db):
-    """매일 랜덤 1시간 해피아워 자동 설정"""
-    row = await db.execute_fetchall("SELECT end_time FROM happy_hour WHERE id = 1")
-    today = dt.now().strftime("%Y-%m-%d")
-    # 오늘치 이미 있으면 스킵
-    if row and row[0]["end_time"] and row[0]["end_time"][:10] == today:
-        return
-    # 오늘 랜덤 시각 (9시~21시)
-    hour = random.randint(9, 20)
-    minute = random.randint(0, 59)
-    start = dt.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
-    end = start + timedelta(hours=1)
-    await db.execute(
-        "UPDATE happy_hour SET start_time = ?, end_time = ? WHERE id = 1",
-        (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")),
-    )
-    await db.commit()
-    await insert_ticker(db, f"⚡ 오늘 해피아워: {start.strftime('%H:%M')}~{end.strftime('%H:%M')} (가위바위보 수익 1.5배!)", "happy_hour")
+RPS_BASE_RATE = 0.97  # 1.97배 배당 (승리 시 배팅금 × 0.97 수익)
+RPS_JACKPOT_RAKE = 0.04  # 배팅금의 4%가 잭팟 풀로
+RPS_LOTTO_RAKE = 0.01  # 배팅금의 1%가 로또 풀로
+RPS_JACKPOT_CHANCE = 0.001  # 잭팟 확률 0.1% (100P 이상 배팅)
+WEALTH_TAX_RATE = 0.10  # 보유세 10%
+LOTTO_DRAW_HOUR = 15
+LOTTO_DRAW_MINUTE = 55
 
 
 @app.get("/api/rps/status")
 async def rps_status(user=Depends(get_current_user)):
-    """잭팟 풀 + 해피아워 상태"""
+    """잭팟 풀 상태"""
     db = await get_db()
     try:
-        await maybe_start_happy_hour(db)
         jp = await db.execute_fetchall("SELECT amount FROM jackpot_pool WHERE id = 1")
-        hh = await db.execute_fetchall("SELECT start_time, end_time FROM happy_hour WHERE id = 1")
-        happy = await is_happy_hour(db)
         return {
             "jackpot_pool": jp[0]["amount"] if jp else 0,
-            "happy_hour": happy,
-            "happy_hour_start": hh[0]["start_time"] if hh and hh[0]["start_time"] else None,
-            "happy_hour_end": hh[0]["end_time"] if hh and hh[0]["end_time"] else None,
         }
     finally:
         await db.close()
@@ -1765,73 +1951,38 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
         if req.wager > max_wager:
             raise HTTPException(400, f"보유 포인트의 90%까지만 배팅할 수 있습니다 (최대 {max_wager}P)")
 
-        # 해피아워 체크
-        await maybe_start_happy_hour(db)
-        happy = await is_happy_hour(db)
-
-        # 잭팟 풀 적립 (7%)
+        # 잭팟 풀 적립 (4%)
         rake = max(1, int(req.wager * RPS_JACKPOT_RAKE))
         await db.execute("UPDATE jackpot_pool SET amount = amount + ? WHERE id = 1", (rake,))
 
-        # 현재 연승 수 계산 (무승부 무시)
-        recent = await db.execute_fetchall(
-            "SELECT result FROM rps_games WHERE user_id = ? ORDER BY id DESC LIMIT 30",
-            (user["user_id"],),
-        )
-        win_streak = 0
-        for r in recent:
-            if r["result"] == "win":
-                win_streak += 1
-            elif r["result"] == "lose":
-                break
+        # 로또 풀 적립 (1%)
+        lotto_rake = int(req.wager * RPS_LOTTO_RAKE)
+        if lotto_rake > 0:
+            await db.execute("UPDATE lotto_pool SET amount = amount + ? WHERE id = 1", (lotto_rake,))
 
         computer = random.choice(["rock", "paper", "scissors"])
         jackpot_win = 0
         if req.choice == computer:
             result = "draw"
             payout = 0
-            streak_bonus = 0
-            happy_bonus = 0
         elif (req.choice == "rock" and computer == "scissors") or \
              (req.choice == "paper" and computer == "rock") or \
              (req.choice == "scissors" and computer == "paper"):
             result = "win"
-            base_payout = int(req.wager * RPS_BASE_RATE)
-            # 연승 보너스
-            new_streak = win_streak + 1
-            streak_rates = {1: 0, 2: 0.10, 3: 0.20, 4: 0.35, 5: 0.50, 6: 0.60}
-            bonus_rate = streak_rates.get(new_streak, 1.0 if new_streak >= 7 else 0)
-            streak_bonus = int(req.wager * bonus_rate)
-            # 해피아워 보너스
-            subtotal = base_payout + streak_bonus
-            happy_bonus = int(subtotal * (RPS_HAPPY_MULTIPLIER - 1)) if happy else 0
-            payout = subtotal + happy_bonus
+            payout = int(req.wager * RPS_BASE_RATE)
         else:
             result = "lose"
             payout = -req.wager
-            streak_bonus = 0
-            happy_bonus = 0
 
         if payout != 0:
-            parts = []
             if result == "win":
-                parts.append(f"배팅 {req.wager}P → +{payout}P")
-                if streak_bonus > 0:
-                    parts.append(f"연승 +{streak_bonus}P")
-                if happy_bonus > 0:
-                    parts.append(f"해피아워 +{happy_bonus}P")
+                desc = f"가위바위보 win (배팅 {req.wager}P → +{payout}P)"
             else:
-                parts.append(f"배팅 {req.wager}P")
-            desc = f"가위바위보 {result} ({', '.join(parts)})"
+                desc = f"가위바위보 lose (배팅 {req.wager}P)"
             await log_point_change(db, user["user_id"], payout, "가위바위보", desc)
 
-        # 잭팟 추첨 (승패 무관, 100P 이상 배팅만)
-        jackpot_chance = 0
-        for threshold, chance in JACKPOT_CHANCES:
-            if req.wager >= threshold:
-                jackpot_chance = chance
-                break
-        if jackpot_chance > 0 and random.random() < jackpot_chance:
+        # 잭팟 추첨 (승패 무관, 100P 이상 배팅만, 0.5%)
+        if req.wager >= 100 and random.random() < RPS_JACKPOT_CHANCE:
             jp_row = await db.execute_fetchall("SELECT amount FROM jackpot_pool WHERE id = 1")
             jp_amount = jp_row[0]["amount"] if jp_row else 0
             if jp_amount >= 100:
@@ -1864,7 +2015,6 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
         new_bal = await db.execute_fetchall(
             "SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],)
         )
-        final_streak = (win_streak + 1) if result == "win" else (0 if result == "lose" else win_streak)
         jp_after = await db.execute_fetchall("SELECT amount FROM jackpot_pool WHERE id = 1")
 
         return {
@@ -1872,12 +2022,8 @@ async def play_rps(req: RPSPlayRequest, user=Depends(get_current_user)):
             "computer_choice": computer,
             "result": result,
             "payout": payout,
-            "streak_bonus": streak_bonus,
-            "happy_bonus": happy_bonus,
-            "happy_hour": happy,
             "jackpot_win": jackpot_win,
             "jackpot_pool": jp_after[0]["amount"] if jp_after else 0,
-            "win_streak": final_streak,
             "new_balance": new_bal[0]["points"] if new_bal else 0,
         }
     finally:
@@ -1916,12 +2062,6 @@ async def insert_system_message(db, message: str):
 async def check_rps_notable_event(db, user_id: int, nickname: str, result: str, wager: int, payout: int):
     messages = []
 
-    # 큰 판 승리/패배
-    if result == "win" and wager >= 500:
-        messages.append(f"{nickname}님이 가위바위보에서 {wager:,}P를 걸어 승리! (+{payout:,}P)")
-    elif result == "lose" and wager >= 500:
-        messages.append(f"{nickname}님이 가위바위보에서 {wager:,}P를 잃었습니다...")
-
     # 연승/연패 감지
     recent = await db.execute_fetchall(
         "SELECT result FROM rps_games WHERE user_id = ? ORDER BY id DESC LIMIT 20",
@@ -1929,7 +2069,7 @@ async def check_rps_notable_event(db, user_id: int, nickname: str, result: str, 
     )
     results = [r["result"] for r in recent]
 
-    if len(results) >= 3:
+    if len(results) >= 5:
         current = results[0]
         streak = 0
         for r in results:
@@ -1938,25 +2078,10 @@ async def check_rps_notable_event(db, user_id: int, nickname: str, result: str, 
             else:
                 break
 
-        if current == "win" and streak >= 3:
+        if current == "win" and streak >= 10:
             messages.append(f"{nickname}님 가위바위보 {streak}연승 중!")
-        elif current == "lose" and streak >= 3:
+        elif current == "lose" and streak >= 10:
             messages.append(f"{nickname}님 가위바위보 {streak}연패 중...")
-        elif current == "draw" and streak >= 4:
-            messages.append(f"{nickname}님 가위바위보 {streak}연속 무승부?!")
-
-    # 최근 5분간 대량 손실
-    five_min_ago = (dt.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-    recent_losses = await db.execute_fetchall(
-        "SELECT SUM(ABS(payout)) as total_lost, COUNT(*) as cnt "
-        "FROM rps_games WHERE user_id = ? AND result = 'lose' AND created_at >= ?",
-        (user_id, five_min_ago),
-    )
-    if recent_losses and recent_losses[0]["total_lost"]:
-        total_lost = recent_losses[0]["total_lost"]
-        cnt = recent_losses[0]["cnt"]
-        if total_lost >= 2000 and cnt >= 3:
-            messages.append(f"{nickname}님이 최근 5분간 {total_lost:,}P를 잃었습니다 ({cnt}판)")
 
     if messages:
         await insert_system_message(db, messages[0])
@@ -2006,6 +2131,344 @@ async def send_chat_message(req: ChatSendRequest, user=Depends(get_current_user)
         )
         await db.commit()
         return {"id": msg_id, "message": msg}
+    finally:
+        await db.close()
+
+
+@app.delete("/api/admin/chat/clear")
+async def admin_clear_chat(user=Depends(get_admin_user)):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM chat_messages")
+        await db.commit()
+        return {"message": "채팅 내역이 초기화되었습니다"}
+    finally:
+        await db.close()
+
+
+@app.delete("/api/admin/chat/{msg_id}")
+async def admin_delete_chat_message(msg_id: int, user=Depends(get_admin_user)):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM chat_messages WHERE id = ?", (msg_id,))
+        await db.commit()
+        return {"message": "삭제되었습니다"}
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# LOTTO (로또) + WEALTH TAX (보유세)
+# ═══════════════════════════════════════════════
+
+
+async def get_user_point_rank(db, user_id: int) -> int:
+    """포인트 기준 순위 반환 (1-based)"""
+    rows = await db.execute_fetchall(
+        """SELECT pb.user_id FROM point_balances pb
+           JOIN users u ON pb.user_id = u.id
+           WHERE u.is_approved = 1 AND u.is_admin = 0
+           ORDER BY pb.points DESC"""
+    )
+    for i, r in enumerate(rows):
+        if r["user_id"] == user_id:
+            return i + 1
+    return len(rows) + 1
+
+
+def max_tickets_for_rank(rank: int) -> int:
+    if rank <= 4:
+        return 1
+    elif rank <= 8:
+        return 3
+    else:
+        return 5
+
+
+async def ensure_open_round(db):
+    """OPEN 상태 라운드가 없으면 생성"""
+    row = await db.execute_fetchall(
+        "SELECT id, round_number FROM lotto_rounds WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1"
+    )
+    if row:
+        return row[0]
+    # 최대 round_number 조회
+    last = await db.execute_fetchall("SELECT MAX(round_number) as mx FROM lotto_rounds")
+    next_num = (last[0]["mx"] or 0) + 1
+    today = dt.now().strftime("%Y-%m-%d")
+    cursor = await db.execute(
+        "INSERT INTO lotto_rounds (round_number, draw_date, status) VALUES (?, ?, 'OPEN')",
+        (next_num, today)
+    )
+    return {"id": cursor.lastrowid, "round_number": next_num}
+
+
+async def maybe_run_daily_lotto_cycle(db):
+    """15:55 이후 호출 시 보유세 징수 + 로또 추첨 (하루 1회)"""
+    today = dt.now().strftime("%Y-%m-%d")
+    now = dt.now()
+
+    # 이미 오늘 실행했으면 skip
+    done = await db.execute_fetchall(
+        "SELECT date FROM wealth_tax_log WHERE date = ?", (today,)
+    )
+    if done:
+        return None
+
+    # 15:55 이전이면 skip
+    if now.hour < LOTTO_DRAW_HOUR or (now.hour == LOTTO_DRAW_HOUR and now.minute < LOTTO_DRAW_MINUTE):
+        return None
+
+    # ── Step 1: 보유세 징수 ──
+    users = await db.execute_fetchall(
+        """SELECT pb.user_id, pb.points FROM point_balances pb
+           JOIN users u ON pb.user_id = u.id
+           WHERE u.is_approved = 1 AND u.is_admin = 0 AND pb.points > 0"""
+    )
+    total_collected = 0
+    tax_count = 0
+    for u in users:
+        tax = int(u["points"] * WEALTH_TAX_RATE)
+        if tax < 1:
+            continue
+        await log_point_change(db, u["user_id"], -tax, "보유세", f"일일 보유세 {int(WEALTH_TAX_RATE*100)}%")
+        total_collected += tax
+        tax_count += 1
+
+    burned = total_collected // 2
+    to_lotto = total_collected - burned
+
+    await db.execute(
+        "UPDATE lotto_pool SET amount = amount + ? WHERE id = 1", (to_lotto,)
+    )
+    await db.execute(
+        "INSERT INTO wealth_tax_log (date, total_collected, burned, to_lotto, user_count) VALUES (?,?,?,?,?)",
+        (today, total_collected, burned, to_lotto, tax_count)
+    )
+
+    # ── Step 2: 로또 추첨 ──
+    round_row = await db.execute_fetchall(
+        "SELECT id, round_number FROM lotto_rounds WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1"
+    )
+    if not round_row:
+        round_info = await ensure_open_round(db)
+        round_id = round_info["id"] if isinstance(round_info, dict) else round_info[0]
+        round_num = round_info["round_number"] if isinstance(round_info, dict) else round_info[1]
+    else:
+        round_id = round_row[0]["id"]
+        round_num = round_row[0]["round_number"]
+
+    pool_row = await db.execute_fetchall("SELECT amount FROM lotto_pool WHERE id = 1")
+    pool_amount = pool_row[0]["amount"] if pool_row else 0
+
+    winning_number = random.randint(1, 46)
+
+    # 당첨자 조회
+    winners = await db.execute_fetchall(
+        """SELECT lt.user_id, u.nickname FROM lotto_tickets lt
+           JOIN users u ON lt.user_id = u.id
+           WHERE lt.round_id = ? AND lt.chosen_number = ?""",
+        (round_id, winning_number)
+    )
+
+    drawn_at = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    winner_count = len(winners)
+    payout_per = 0
+
+    if winner_count > 0 and pool_amount > 0:
+        payout_per = pool_amount // winner_count
+        for w in winners:
+            await log_point_change(db, w["user_id"], payout_per, "로또",
+                                   f"로또 {round_num}회 당첨! +{payout_per:,}P")
+        remainder = pool_amount - payout_per * winner_count
+        await db.execute("UPDATE lotto_pool SET amount = ? WHERE id = 1", (remainder,))
+        status = "DRAWN"
+        winner_names = ", ".join(w["nickname"] for w in winners)
+        await insert_system_message(db, f"🎱 로또 {round_num}회 당첨번호: {winning_number}! 당첨자: {winner_names} (+{payout_per:,}P)")
+        await insert_ticker(db, f"🎱 로또 {round_num}회 당첨! 번호 {winning_number}, {winner_names} +{payout_per:,}P", "lotto")
+    else:
+        status = "NO_WINNER"
+        carry = pool_amount
+        await insert_system_message(db, f"🎱 로또 {round_num}회 당첨번호: {winning_number} - 당첨자 없음! {carry:,}P 이월")
+        await insert_ticker(db, f"🎱 로또 {round_num}회 당첨자 없음! {carry:,}P 이월", "lotto")
+
+    await db.execute(
+        """UPDATE lotto_rounds SET status=?, winning_number=?, pool_amount=?,
+           winner_count=?, payout_per_winner=?, drawn_at=? WHERE id=?""",
+        (status, winning_number, pool_amount, winner_count, payout_per, drawn_at, round_id)
+    )
+
+    # 보유세 안내
+    if total_collected > 0:
+        await insert_system_message(db,
+            f"💰 보유세 징수: 총 {total_collected:,}P (소각 {burned:,}P / 로또풀 {to_lotto:,}P)")
+
+    # 다음 라운드 생성
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    await db.execute(
+        "INSERT INTO lotto_rounds (round_number, draw_date, status) VALUES (?, ?, 'OPEN')",
+        (round_num + 1, tomorrow)
+    )
+
+    await db.commit()
+    return {"round": round_num, "winning_number": winning_number, "winners": winner_count}
+
+
+@app.get("/api/lotto/status")
+async def lotto_status(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        await maybe_run_daily_lotto_cycle(db)
+
+        pool = await db.execute_fetchall("SELECT amount FROM lotto_pool WHERE id = 1")
+        pool_amount = pool[0]["amount"] if pool else 0
+
+        # 현재 OPEN 라운드
+        round_info = await ensure_open_round(db)
+        if isinstance(round_info, dict):
+            round_id = round_info["id"]
+            round_num = round_info["round_number"]
+        else:
+            round_id = round_info["id"]
+            round_num = round_info["round_number"]
+        await db.commit()
+
+        # 내 순위 & 티켓
+        rank = await get_user_point_rank(db, user["user_id"])
+        max_tickets = max_tickets_for_rank(rank)
+
+        my_tickets = await db.execute_fetchall(
+            "SELECT chosen_number FROM lotto_tickets WHERE round_id = ? AND user_id = ?",
+            (round_id, user["user_id"])
+        )
+        my_numbers = [t["chosen_number"] for t in my_tickets]
+
+        # 오늘 보유세 정보
+        today = dt.now().strftime("%Y-%m-%d")
+        tax_info = await db.execute_fetchall(
+            "SELECT * FROM wealth_tax_log WHERE date = ?", (today,)
+        )
+
+        # 가장 최근 추첨 결과
+        last_drawn = await db.execute_fetchall(
+            """SELECT lr.*, GROUP_CONCAT(u.nickname) as winner_names
+               FROM lotto_rounds lr
+               LEFT JOIN lotto_tickets lt ON lt.round_id = lr.id AND lt.chosen_number = lr.winning_number
+               LEFT JOIN users u ON lt.user_id = u.id
+               WHERE lr.status IN ('DRAWN', 'NO_WINNER')
+               GROUP BY lr.id
+               ORDER BY lr.id DESC LIMIT 1"""
+        )
+
+        return {
+            "pool_amount": pool_amount,
+            "round_id": round_id,
+            "round_number": round_num,
+            "my_rank": rank,
+            "max_tickets": max_tickets,
+            "my_numbers": my_numbers,
+            "draw_hour": LOTTO_DRAW_HOUR,
+            "draw_minute": LOTTO_DRAW_MINUTE,
+            "tax_done": bool(tax_info),
+            "tax_info": dict(tax_info[0]) if tax_info else None,
+            "last_result": dict(last_drawn[0]) if last_drawn else None,
+        }
+    finally:
+        await db.close()
+
+
+@app.post("/api/lotto/pick")
+async def lotto_pick(req: LottoTicketRequest, user=Depends(get_current_user)):
+    now = dt.now()
+    if now.hour > LOTTO_DRAW_HOUR or (now.hour == LOTTO_DRAW_HOUR and now.minute >= LOTTO_DRAW_MINUTE):
+        raise HTTPException(400, "추첨 시각(15:55) 이후에는 번호를 선택할 수 없습니다")
+
+    for n in req.numbers:
+        if n < 1 or n > 46:
+            raise HTTPException(400, "번호는 1~46 사이여야 합니다")
+    if len(set(req.numbers)) != len(req.numbers):
+        raise HTTPException(400, "중복된 번호는 선택할 수 없습니다")
+
+    db = await get_db()
+    try:
+        round_info = await ensure_open_round(db)
+        round_id = round_info["id"] if isinstance(round_info, dict) else round_info[0]
+        await db.commit()
+
+        rank = await get_user_point_rank(db, user["user_id"])
+        max_tickets = max_tickets_for_rank(rank)
+
+        # 이미 제출한 티켓
+        existing = await db.execute_fetchall(
+            "SELECT chosen_number FROM lotto_tickets WHERE round_id = ? AND user_id = ?",
+            (round_id, user["user_id"])
+        )
+        existing_numbers = {t["chosen_number"] for t in existing}
+
+        new_numbers = [n for n in req.numbers if n not in existing_numbers]
+        total_after = len(existing_numbers) + len(new_numbers)
+        if total_after > max_tickets:
+            raise HTTPException(400,
+                f"티켓 한도 초과 (현재 순위 {rank}위, 최대 {max_tickets}장, 이미 {len(existing_numbers)}장 사용)")
+
+        for n in new_numbers:
+            await db.execute(
+                "INSERT INTO lotto_tickets (round_id, user_id, chosen_number) VALUES (?, ?, ?)",
+                (round_id, user["user_id"], n)
+            )
+        await db.commit()
+
+        all_tickets = await db.execute_fetchall(
+            "SELECT chosen_number FROM lotto_tickets WHERE round_id = ? AND user_id = ?",
+            (round_id, user["user_id"])
+        )
+        return {
+            "my_numbers": [t["chosen_number"] for t in all_tickets],
+            "remaining": max_tickets - len(all_tickets),
+        }
+    finally:
+        await db.close()
+
+
+@app.delete("/api/lotto/pick/{number}")
+async def lotto_delete_pick(number: int, user=Depends(get_current_user)):
+    now = dt.now()
+    if now.hour > LOTTO_DRAW_HOUR or (now.hour == LOTTO_DRAW_HOUR and now.minute >= LOTTO_DRAW_MINUTE):
+        raise HTTPException(400, "추첨 시각 이후에는 변경할 수 없습니다")
+
+    db = await get_db()
+    try:
+        round_row = await db.execute_fetchall(
+            "SELECT id FROM lotto_rounds WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1"
+        )
+        if not round_row:
+            raise HTTPException(400, "진행 중인 라운드가 없습니다")
+
+        await db.execute(
+            "DELETE FROM lotto_tickets WHERE round_id = ? AND user_id = ? AND chosen_number = ?",
+            (round_row[0]["id"], user["user_id"], number)
+        )
+        await db.commit()
+        return {"message": f"{number}번 취소됨"}
+    finally:
+        await db.close()
+
+
+@app.get("/api/lotto/history")
+async def lotto_history(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT lr.*,
+                      GROUP_CONCAT(DISTINCT u.nickname) as winner_names
+               FROM lotto_rounds lr
+               LEFT JOIN lotto_tickets lt ON lt.round_id = lr.id AND lt.chosen_number = lr.winning_number
+               LEFT JOIN users u ON lt.user_id = u.id
+               WHERE lr.status != 'OPEN'
+               GROUP BY lr.id
+               ORDER BY lr.round_number DESC LIMIT 20"""
+        )
+        return [dict(r) for r in rows]
     finally:
         await db.close()
 
@@ -2085,7 +2548,7 @@ async def check_dice_notable_event(db, winner_id: int, winner_nick: str, total_p
     )
     if stats:
         ws = stats[0]["current_win_streak"]
-        if ws >= 3:
+        if ws >= 10:
             messages.append(f"🔥 {winner_nick}님 주사위 {ws}연승!")
 
     # 패배자 연패 체크
@@ -2100,29 +2563,8 @@ async def check_dice_notable_event(db, winner_id: int, winner_nick: str, total_p
     )
     for loser in losers:
         ls = loser["current_loss_streak"] or 0
-        if ls >= 3:
+        if ls >= 10:
             messages.append(f"😭 {loser['nickname']}님 주사위 {ls}연패...")
-
-    # 최근 5분간 대량 손실/득점
-    five_min_ago = (dt.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-    recent_earned = await db.execute_fetchall(
-        """SELECT SUM(amount) as total, COUNT(*) as cnt
-           FROM point_transactions
-           WHERE user_id = ? AND source = '주사위 우승' AND created_at >= ?""",
-        (winner_id, five_min_ago),
-    )
-    if recent_earned and recent_earned[0]["total"] and recent_earned[0]["total"] >= 3000 and recent_earned[0]["cnt"] >= 2:
-        messages.append(f"📈 {winner_nick}님 최근 5분간 주사위로 {recent_earned[0]['total']:,}P 획득!")
-
-    for loser in losers:
-        recent_lost = await db.execute_fetchall(
-            """SELECT SUM(ABS(amount)) as total, COUNT(*) as cnt
-               FROM point_transactions
-               WHERE user_id = ? AND source IN ('주사위 참가', '주사위 참가비') AND created_at >= ?""",
-            (loser["user_id"], five_min_ago),
-        )
-        if recent_lost and recent_lost[0]["total"] and recent_lost[0]["total"] >= 2000 and recent_lost[0]["cnt"] >= 3:
-            messages.append(f"📉 {loser['nickname']}님 최근 5분간 주사위로 {recent_lost[0]['total']:,}P 잃음...")
 
     # 가장 주목할 만한 메시지 1개만
     if messages:
@@ -2406,20 +2848,19 @@ async def create_dice_room(req: DiceRoomCreateRequest, user=Depends(get_current_
         if pts < req.entry_fee:
             raise HTTPException(400, "포인트가 부족합니다")
 
-        # 방 생성
+        # 방 생성 (참가비는 라운드 시작 시 차감)
         cursor = await db.execute(
             """INSERT INTO dice_rooms (creator_id, mode, dice_min, dice_max, entry_fee, total_pot)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user["user_id"], req.mode, req.dice_min, req.dice_max, req.entry_fee, req.entry_fee)
+               VALUES (?, ?, ?, ?, ?, 0)""",
+            (user["user_id"], req.mode, req.dice_min, req.dice_max, req.entry_fee)
         )
         room_id = cursor.lastrowid
 
-        # 방장 자동 입장 + 참가비 차감
+        # 방장 자동 입장 (참가비 차감 없음)
         await db.execute(
             "INSERT INTO dice_players (room_id, user_id, is_ready) VALUES (?, ?, 1)",
             (room_id, user["user_id"])
         )
-        await log_point_change(db, user["user_id"], -req.entry_fee, "주사위 참가", f"방 #{room_id} 생성")
         await db.commit()
         return {"room_id": room_id, "message": "방 생성 완료"}
     finally:
@@ -2565,15 +3006,10 @@ async def join_dice_room(room_id: int, user=Depends(get_current_user)):
         if pts < room["entry_fee"]:
             raise HTTPException(400, "포인트가 부족합니다")
 
-        # 입장
+        # 입장 (참가비는 라운드 시작 시 차감)
         await db.execute(
             "INSERT INTO dice_players (room_id, user_id) VALUES (?, ?)",
             (room_id, user["user_id"])
-        )
-        await log_point_change(db, user["user_id"], -room["entry_fee"], "주사위 참가", f"방 #{room_id} 입장")
-        await db.execute(
-            "UPDATE dice_rooms SET total_pot = total_pot + ? WHERE id = ?",
-            (room["entry_fee"], room_id)
         )
         await db.commit()
         return {"message": "입장 완료"}
@@ -2633,18 +3069,13 @@ async def leave_dice_room(room_id: int, user=Depends(get_current_user)):
         if room["creator_id"] == user["user_id"]:
             raise HTTPException(400, "방장은 나갈 수 없습니다. 방 끝내기를 이용하세요.")
 
-        # 참가비 환불 및 퇴장
+        # 퇴장 (참가비 미차감 상태이므로 환불 없음)
         await db.execute(
             "DELETE FROM dice_players WHERE room_id = ? AND user_id = ?",
             (room_id, user["user_id"])
         )
-        await log_point_change(db, user["user_id"], room["entry_fee"], "주사위 환불", f"방 #{room_id} 퇴장")
-        await db.execute(
-            "UPDATE dice_rooms SET total_pot = total_pot - ? WHERE id = ?",
-            (room["entry_fee"], room_id)
-        )
         await db.commit()
-        return {"message": "방에서 나갔습니다. 참가비가 환불됩니다."}
+        return {"message": "방에서 나갔습니다."}
     finally:
         await db.close()
 
@@ -2675,16 +3106,28 @@ async def start_dice_round(room_id: int, user=Depends(get_current_user)):
         if len(alive_players) < 2:
             raise HTTPException(400, "최소 2명 이상 필요합니다")
 
-        # 전원 준비 체크 (첫 라운드만)
-        if room["current_round"] == 0:
-            not_ready = [p for p in alive_players if not p["is_ready"]]
-            if not_ready:
-                raise HTTPException(400, "모든 참가자가 준비해야 합니다")
+        # 전원 준비 체크
+        not_ready = [p for p in alive_players if not p["is_ready"]]
+        if not_ready:
+            raise HTTPException(400, "모든 참가자가 준비해야 합니다")
+
+        # 참가비 차감 + pot 생성
+        for p in alive_players:
+            bal = await db.execute_fetchall(
+                "SELECT points FROM point_balances WHERE user_id = ?", (p["user_id"],)
+            )
+            pts = bal[0]["points"] if bal else 0
+            if pts < room["entry_fee"]:
+                raise HTTPException(400, f"포인트가 부족한 참가자가 있습니다")
+
+        pot = room["entry_fee"] * len(alive_players)
+        for p in alive_players:
+            await log_point_change(db, p["user_id"], -room["entry_fee"], "주사위 참가", f"방 #{room_id} 라운드 시작")
 
         new_round = room["current_round"] + 1
         await db.execute(
-            "UPDATE dice_rooms SET status = 'ROLLING', current_round = ? WHERE id = ?",
-            (new_round, room_id)
+            "UPDATE dice_rooms SET status = 'ROLLING', current_round = ?, total_pot = ? WHERE id = ?",
+            (new_round, pot, room_id)
         )
         await db.commit()
         return {"round": new_round, "message": f"라운드 {new_round} 시작!"}
@@ -2710,12 +3153,17 @@ async def next_dice_game(room_id: int, user=Depends(get_current_user)):
             raise HTTPException(400, "한 판 더를 시작할 수 없는 상태입니다")
 
         all_players = await db.execute_fetchall(
-            """SELECT dp.user_id, COALESCE(pb.points, 0) as points
+            """SELECT dp.user_id, dp.is_ready, COALESCE(pb.points, 0) as points
                FROM dice_players dp
                LEFT JOIN point_balances pb ON dp.user_id = pb.user_id
                WHERE dp.room_id = ?""",
             (room_id,)
         )
+
+        # 전원 준비 체크
+        not_ready = [p for p in all_players if not p["is_ready"]]
+        if not_ready:
+            raise HTTPException(400, "모든 참가자가 준비해야 합니다")
 
         participating = []
         excluded = []
@@ -2728,16 +3176,16 @@ async def next_dice_game(room_id: int, user=Depends(get_current_user)):
         if len(participating) < 2:
             raise HTTPException(400, f"포인트가 충분한 참가자가 {len(participating)}명뿐입니다 (최소 2명)")
 
-        # 참가비 차감 + 플레이어 리셋
+        # 플레이어 리셋 + 참가비 차감
         for uid in participating:
             await db.execute(
-                "UPDATE dice_players SET is_alive = 1, eliminated_round = NULL WHERE room_id = ? AND user_id = ?",
+                "UPDATE dice_players SET is_alive = 1, is_ready = 0, eliminated_round = NULL WHERE room_id = ? AND user_id = ?",
                 (room_id, uid)
             )
             await log_point_change(db, uid, -room["entry_fee"], "주사위 참가", f"방 #{room_id} 한판더")
         for uid in excluded:
             await db.execute(
-                "UPDATE dice_players SET is_alive = 0 WHERE room_id = ? AND user_id = ?",
+                "UPDATE dice_players SET is_alive = 0, is_ready = 0 WHERE room_id = ? AND user_id = ?",
                 (room_id, uid)
             )
 
@@ -2838,7 +3286,7 @@ async def roll_dice(room_id: int, user=Depends(get_current_user)):
                 for uid in eliminated_users:
                     await log_point_change(db, uid, room["entry_fee"], "주사위 환불", f"방 #{room_id} 무승부")
                     await db.execute(
-                        "UPDATE dice_players SET is_alive = 1, eliminated_round = NULL WHERE room_id = ? AND user_id = ?",
+                        "UPDATE dice_players SET is_alive = 1, is_ready = 0, eliminated_round = NULL WHERE room_id = ? AND user_id = ?",
                         (room_id, uid)
                     )
                 await db.execute(
@@ -2856,11 +3304,16 @@ async def roll_dice(room_id: int, user=Depends(get_current_user)):
                     winner_id = min(surviving_users, key=lambda x: x[1])[0]
 
                 await db.execute(
-                    """UPDATE dice_rooms SET status = 'WAITING', winner_id = ?,
+                    """UPDATE dice_rooms SET status = 'WAITING', winner_id = ?, total_pot = 0,
                        finished_at = datetime('now','localtime') WHERE id = ?""",
                     (winner_id, room_id)
                 )
                 await log_point_change(db, winner_id, room["total_pot"], "주사위 우승", f"방 #{room_id} 우승 ({room['total_pot']}P)")
+                # 한판더 대비 준비상태 초기화
+                await db.execute(
+                    "UPDATE dice_players SET is_ready = 0 WHERE room_id = ?",
+                    (room_id,)
+                )
                 await _update_dice_stats(db, room_id, winner_id, room["total_pot"])
                 # 전광판: 주사위 주목 이벤트
                 winner_row = await db.execute_fetchall("SELECT nickname FROM users WHERE id = ?", (winner_id,))
@@ -2940,8 +3393,8 @@ async def cancel_dice_room(room_id: int, user=Depends(get_current_user)):
         if room["status"] not in ("WAITING", "ROLLING"):
             raise HTTPException(400, "이미 종료된 방입니다")
 
-        # 아직 결판 안 난 상태에서만 환불 (pot > 0이면 아직 판돈이 남아있음)
-        if room["total_pot"] > 0:
+        # 진행 중(ROLLING)이고 pot이 있을 때만 환불 (참가비가 차감된 상태)
+        if room["status"] == "ROLLING" and room["total_pot"] > 0:
             alive_players = await db.execute_fetchall(
                 "SELECT user_id FROM dice_players WHERE room_id = ? AND is_alive = 1",
                 (room_id,)
@@ -2954,6 +3407,106 @@ async def cancel_dice_room(room_id: int, user=Depends(get_current_user)):
         )
         await db.commit()
         return {"message": "방이 종료되었습니다."}
+    finally:
+        await db.close()
+
+
+@app.get("/api/admin/omok/rooms")
+async def admin_list_omok_rooms(user=Depends(get_admin_user)):
+    db = await get_db()
+    try:
+        rooms = await db.execute_fetchall(
+            """SELECT r.id, r.bet_amount, r.status, r.move_count, r.created_at,
+                      c.nickname as creator_name, o.nickname as opponent_name
+               FROM omok_rooms r
+               JOIN users c ON r.creator_id = c.id
+               LEFT JOIN users o ON r.opponent_id = o.id
+               WHERE r.status IN ('WAITING', 'PLAYING')
+               ORDER BY r.created_at DESC"""
+        )
+        return [dict(r) for r in rooms]
+    finally:
+        await db.close()
+
+
+@app.post("/api/admin/omok/rooms/{room_id}/destroy")
+async def admin_destroy_omok_room(room_id: int, user=Depends(get_admin_user)):
+    db = await get_db()
+    try:
+        rooms = await db.execute_fetchall(
+            "SELECT * FROM omok_rooms WHERE id = ?", (room_id,)
+        )
+        if not rooms:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rooms[0]
+
+        if room["status"] not in ("WAITING", "PLAYING"):
+            raise HTTPException(400, "이미 종료된 방입니다")
+
+        # 참가자 베팅금 환불
+        if room["bet_amount"] > 0:
+            await log_point_change(db, room["creator_id"], room["bet_amount"], "오목 환불", f"관리자 방 #{room_id} 강제 종료")
+            if room["opponent_id"]:
+                await log_point_change(db, room["opponent_id"], room["bet_amount"], "오목 환불", f"관리자 방 #{room_id} 강제 종료")
+
+        # 관전 배팅 환불
+        await _settle_spectator_bets(db, "omok", room_id, 0, is_draw=True)
+
+        await db.execute(
+            "UPDATE omok_rooms SET status = 'CANCELLED' WHERE id = ?", (room_id,)
+        )
+        await db.commit()
+        return {"message": f"오목 방 #{room_id}이 강제 종료되었습니다. 베팅금이 환불되었습니다."}
+    finally:
+        await db.close()
+
+
+@app.get("/api/admin/chess/rooms")
+async def admin_list_chess_rooms(user=Depends(get_admin_user)):
+    db = await get_db()
+    try:
+        rooms = await db.execute_fetchall(
+            """SELECT r.id, r.bet_amount, r.status, r.move_count, r.created_at,
+                      c.nickname as creator_name, o.nickname as opponent_name
+               FROM chess_rooms r
+               JOIN users c ON r.creator_id = c.id
+               LEFT JOIN users o ON r.opponent_id = o.id
+               WHERE r.status IN ('WAITING', 'PLAYING')
+               ORDER BY r.created_at DESC"""
+        )
+        return [dict(r) for r in rooms]
+    finally:
+        await db.close()
+
+
+@app.post("/api/admin/chess/rooms/{room_id}/destroy")
+async def admin_destroy_chess_room(room_id: int, user=Depends(get_admin_user)):
+    db = await get_db()
+    try:
+        rooms = await db.execute_fetchall(
+            "SELECT * FROM chess_rooms WHERE id = ?", (room_id,)
+        )
+        if not rooms:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rooms[0]
+
+        if room["status"] not in ("WAITING", "PLAYING"):
+            raise HTTPException(400, "이미 종료된 방입니다")
+
+        # 참가자 베팅금 환불
+        if room["bet_amount"] > 0:
+            await log_point_change(db, room["creator_id"], room["bet_amount"], "체스 환불", f"관리자 방 #{room_id} 강제 종료")
+            if room["opponent_id"]:
+                await log_point_change(db, room["opponent_id"], room["bet_amount"], "체스 환불", f"관리자 방 #{room_id} 강제 종료")
+
+        # 관전 배팅 환불
+        await _settle_spectator_bets(db, "chess", room_id, 0, is_draw=True)
+
+        await db.execute(
+            "UPDATE chess_rooms SET status = 'CANCELLED' WHERE id = ?", (room_id,)
+        )
+        await db.commit()
+        return {"message": f"체스 방 #{room_id}이 강제 종료되었습니다. 베팅금이 환불되었습니다."}
     finally:
         await db.close()
 
@@ -3292,6 +3845,1278 @@ async def set_nordle_puzzle(req: NordlePuzzleRequest, user=Depends(get_admin_use
         )
         await db.commit()
         return {"message": f"퍼즐 설정 완료: {req.equation} ({target_date})"}
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# OMOK (오목 - 렌주룰)
+# ═══════════════════════════════════════════════
+
+OMOK_SIZE = 19
+
+def _empty_board():
+    return [[0]*OMOK_SIZE for _ in range(OMOK_SIZE)]
+
+def _count_direction(board, x, y, dx, dy, color):
+    """한 방향으로 연속된 같은 색 돌 수 세기"""
+    cnt = 0
+    nx, ny = x + dx, y + dy
+    while 0 <= nx < OMOK_SIZE and 0 <= ny < OMOK_SIZE and board[ny][nx] == color:
+        cnt += 1
+        nx += dx
+        ny += dy
+    return cnt
+
+def _check_five(board, x, y, color):
+    """5목 이상 완성 여부 확인. (연속 개수, 정확히5목여부) 반환"""
+    dirs = [(1,0),(0,1),(1,1),(1,-1)]
+    for dx, dy in dirs:
+        cnt = 1 + _count_direction(board, x, y, dx, dy, color) + _count_direction(board, x, y, -dx, -dy, color)
+        if cnt >= 5:
+            return cnt
+    return 0
+
+def _is_overline(board, x, y, color):
+    """장목(6목 이상) 체크"""
+    dirs = [(1,0),(0,1),(1,1),(1,-1)]
+    for dx, dy in dirs:
+        cnt = 1 + _count_direction(board, x, y, dx, dy, color) + _count_direction(board, x, y, -dx, -dy, color)
+        if cnt >= 6:
+            return True
+    return False
+
+def _count_open_pattern(board, x, y, color, target_len):
+    """특정 방향에서 열린 패턴(활삼/사) 수를 세기. target_len=3이면 활삼, 4이면 사."""
+    dirs = [(1,0),(0,1),(1,1),(1,-1)]
+    count = 0
+    for dx, dy in dirs:
+        # 해당 방향으로 연속된 돌 수
+        pos_cnt = _count_direction(board, x, y, dx, dy, color)
+        neg_cnt = _count_direction(board, x, y, -dx, -dy, color)
+        total = 1 + pos_cnt + neg_cnt
+
+        if target_len == 4:
+            # 사(四): 연속 4개 + 한쪽이라도 빈칸 (= 5목 가능)
+            if total == 4:
+                # 양 끝 확인
+                end1_x, end1_y = x + dx*(pos_cnt+1), y + dy*(pos_cnt+1)
+                end2_x, end2_y = x - dx*(neg_cnt+1), y - dy*(neg_cnt+1)
+                open1 = 0 <= end1_x < OMOK_SIZE and 0 <= end1_y < OMOK_SIZE and board[end1_y][end1_x] == 0
+                open2 = 0 <= end2_x < OMOK_SIZE and 0 <= end2_y < OMOK_SIZE and board[end2_y][end2_x] == 0
+                if open1 or open2:
+                    count += 1
+            # 띈 사 체크 (예: XO_OOX 패턴)
+            elif total == 3:
+                # 양 끝 방향으로 하나 건너 돌이 있는지
+                for sign in [1, -1]:
+                    edge_cnt = pos_cnt if sign == 1 else neg_cnt
+                    gap_x = x + sign*dx*(edge_cnt+1)
+                    gap_y = y + sign*dy*(edge_cnt+1)
+                    if 0 <= gap_x < OMOK_SIZE and 0 <= gap_y < OMOK_SIZE and board[gap_y][gap_x] == 0:
+                        beyond_x = gap_x + sign*dx
+                        beyond_y = gap_y + sign*dy
+                        if 0 <= beyond_x < OMOK_SIZE and 0 <= beyond_y < OMOK_SIZE and board[beyond_y][beyond_x] == color:
+                            count += 1
+
+        elif target_len == 3:
+            # 활삼(活三): 연속 3개 + 양쪽 빈칸 (열린 삼)
+            if total == 3:
+                end1_x, end1_y = x + dx*(pos_cnt+1), y + dy*(pos_cnt+1)
+                end2_x, end2_y = x - dx*(neg_cnt+1), y - dy*(neg_cnt+1)
+                open1 = 0 <= end1_x < OMOK_SIZE and 0 <= end1_y < OMOK_SIZE and board[end1_y][end1_x] == 0
+                open2 = 0 <= end2_x < OMOK_SIZE and 0 <= end2_y < OMOK_SIZE and board[end2_y][end2_x] == 0
+                if open1 and open2:
+                    # 추가: 양끝 바깥이 상대 돌로 막혀있지 않은지
+                    count += 1
+
+    return count
+
+def _is_forbidden_move(board, x, y):
+    """렌주룰: 흑(1)의 금수 체크. board[y][x]에 이미 흑돌이 놓인 상태에서 호출."""
+    color = 1  # black
+    # 1. 장목(6목 이상)
+    if _is_overline(board, x, y, color):
+        return True, "overline"
+    # 정확히 5목이면 금수가 아닌 승리
+    if _check_five(board, x, y, color) == 5:
+        return False, None
+    # 2. 쌍사(Double Four)
+    fours = _count_open_pattern(board, x, y, color, 4)
+    if fours >= 2:
+        return True, "double_four"
+    # 3. 쌍삼(Double Three)
+    threes = _count_open_pattern(board, x, y, color, 3)
+    if threes >= 2:
+        return True, "double_three"
+    return False, None
+
+def _calc_mmr_change(winner_mmr, loser_mmr, k=32):
+    """Elo rating 변동 계산"""
+    expected_w = 1 / (1 + 10**((loser_mmr - winner_mmr) / 400))
+    expected_l = 1 - expected_w
+    w_change = round(k * (1 - expected_w))
+    l_change = round(k * (0 - expected_l))
+    return w_change, l_change
+
+
+@app.post("/api/omok/rooms")
+async def create_omok_room(req: OmokRoomCreateRequest, user=Depends(get_current_user)):
+    if req.bet_amount < 0:
+        raise HTTPException(400, "베팅 금액이 올바르지 않습니다")
+    db = await get_db()
+    try:
+        # 이미 진행 중인 방이 있는지 확인
+        existing = await db.execute_fetchall(
+            "SELECT id FROM omok_rooms WHERE (creator_id = ? OR opponent_id = ?) AND status IN ('WAITING','PLAYING')",
+            (user["user_id"], user["user_id"])
+        )
+        if existing:
+            raise HTTPException(400, "이미 참여 중인 오목 방이 있습니다")
+
+        if req.bet_amount > 0:
+            bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],))
+            if not bal or bal[0]["points"] < req.bet_amount:
+                raise HTTPException(400, "포인트가 부족합니다")
+            await log_point_change(db, user["user_id"], -req.bet_amount, "omok", f"오목 베팅 ({req.bet_amount}P)")
+
+        board = json.dumps(_empty_board())
+        cursor = await db.execute(
+            """INSERT INTO omok_rooms (creator_id, bet_amount, board, current_turn, creator_color)
+               VALUES (?, ?, ?, 'B', 'B')""",
+            (user["user_id"], req.bet_amount, board)
+        )
+        room_id = cursor.lastrowid
+        await db.commit()
+        return {"room_id": room_id}
+    finally:
+        await db.close()
+
+
+@app.get("/api/omok/rooms")
+async def list_omok_rooms(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT r.*, u1.nickname as creator_name, u2.nickname as opponent_name
+               FROM omok_rooms r
+               JOIN users u1 ON r.creator_id = u1.id
+               LEFT JOIN users u2 ON r.opponent_id = u2.id
+               WHERE r.status IN ('WAITING','PLAYING')
+               ORDER BY r.created_at DESC"""
+        )
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+@app.get("/api/omok/rooms/{room_id}")
+async def get_omok_room(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT r.*, u1.nickname as creator_name, u2.nickname as opponent_name
+               FROM omok_rooms r
+               JOIN users u1 ON r.creator_id = u1.id
+               LEFT JOIN users u2 ON r.opponent_id = u2.id
+               WHERE r.id = ?""",
+            (room_id,)
+        )
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = dict(rows[0])
+        room["board"] = json.loads(room["board"])
+        # 승자 닉네임
+        if room.get("winner_id"):
+            w = await db.execute_fetchall("SELECT nickname FROM users WHERE id=?", (room["winner_id"],))
+            room["winner_name"] = w[0]["nickname"] if w else None
+        # 최근 수순
+        moves = await db.execute_fetchall(
+            "SELECT * FROM omok_moves WHERE room_id = ? ORDER BY move_number",
+            (room_id,)
+        )
+        room["moves"] = [dict(m) for m in moves]
+        return room
+    finally:
+        await db.close()
+
+
+@app.post("/api/omok/rooms/{room_id}/join")
+async def join_omok_room(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM omok_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rows[0]
+        if room["status"] != "WAITING":
+            raise HTTPException(400, "참가할 수 없는 상태입니다")
+        if room["creator_id"] == user["user_id"]:
+            raise HTTPException(400, "자신의 방에 참가할 수 없습니다")
+
+        # 이미 다른 방에 참여 중인지
+        existing = await db.execute_fetchall(
+            "SELECT id FROM omok_rooms WHERE (creator_id = ? OR opponent_id = ?) AND status IN ('WAITING','PLAYING')",
+            (user["user_id"], user["user_id"])
+        )
+        if existing:
+            raise HTTPException(400, "이미 참여 중인 오목 방이 있습니다")
+
+        if room["bet_amount"] > 0:
+            bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],))
+            if not bal or bal[0]["points"] < room["bet_amount"]:
+                raise HTTPException(400, "포인트가 부족합니다")
+            await log_point_change(db, user["user_id"], -room["bet_amount"], "omok", f"오목 베팅 ({room['bet_amount']}P)")
+
+        await db.execute(
+            "UPDATE omok_rooms SET opponent_id = ?, status = 'PLAYING' WHERE id = ?",
+            (user["user_id"], room_id)
+        )
+        await db.commit()
+        return {"message": "입장 완료"}
+    finally:
+        await db.close()
+
+
+@app.post("/api/omok/rooms/{room_id}/move")
+async def omok_move(room_id: int, req: OmokMoveRequest, user=Depends(get_current_user)):
+    if not (0 <= req.x < OMOK_SIZE and 0 <= req.y < OMOK_SIZE):
+        raise HTTPException(400, "좌표가 범위를 벗어났습니다")
+
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM omok_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "게임이 진행 중이 아닙니다")
+
+        # 차례 확인
+        uid = user["user_id"]
+        if room["current_turn"] == room["creator_color"]:
+            if uid != room["creator_id"]:
+                raise HTTPException(400, "상대방의 차례입니다")
+        else:
+            if uid != room["opponent_id"]:
+                raise HTTPException(400, "상대방의 차례입니다")
+
+        board = json.loads(room["board"])
+        if board[req.y][req.x] != 0:
+            raise HTTPException(400, "이미 돌이 놓인 자리입니다")
+
+        current_color = 1 if room["current_turn"] == "B" else 2  # 1=black, 2=white
+        board[req.y][req.x] = current_color
+
+        result = {"winner": None, "reason": None, "forbidden": None}
+
+        # 렌주룰: 흑 금수 체크
+        if current_color == 1:
+            forbidden, reason = _is_forbidden_move(board, req.x, req.y)
+            if forbidden:
+                board[req.y][req.x] = 0  # 되돌리기
+                raise HTTPException(400, f"금수입니다: {reason}")
+
+        # 5목 체크
+        five_count = _check_five(board, req.x, req.y, current_color)
+        if current_color == 1 and five_count == 5:
+            result["winner"] = uid
+            result["reason"] = "five"
+        elif current_color == 2 and five_count >= 5:
+            # 백은 6목 이상도 승리
+            result["winner"] = uid
+            result["reason"] = "five"
+
+        move_count = room["move_count"] + 1
+        next_turn = "W" if room["current_turn"] == "B" else "B"
+
+        # 무승부 (225수)
+        if not result["winner"] and move_count >= OMOK_SIZE * OMOK_SIZE:
+            result["reason"] = "draw"
+
+        # 수순 기록
+        await db.execute(
+            "INSERT INTO omok_moves (room_id, user_id, x, y, color, move_number) VALUES (?,?,?,?,?,?)",
+            (room_id, uid, req.x, req.y, room["current_turn"], move_count)
+        )
+
+        if result["winner"]:
+            await db.execute(
+                "UPDATE omok_rooms SET board=?, move_count=?, status='FINISHED', winner_id=?, win_reason=?, finished_at=datetime('now','localtime') WHERE id=?",
+                (json.dumps(board), move_count, result["winner"], result["reason"], room_id)
+            )
+            # 포인트 지급
+            if room["bet_amount"] > 0:
+                total_pot = room["bet_amount"] * 2
+                await log_point_change(db, result["winner"], total_pot, "omok", f"오목 승리 +{total_pot}P")
+            # MMR 업데이트
+            loser_id = room["opponent_id"] if result["winner"] == room["creator_id"] else room["creator_id"]
+            await _update_mmr(db, result["winner"], loser_id, "omok", "win")
+            # 티커
+            winner_name = (await db.execute_fetchall("SELECT nickname FROM users WHERE id=?", (result["winner"],)))[0]["nickname"]
+            await insert_ticker(db, f"⚫ {winner_name}님이 오목에서 승리! (+{room['bet_amount']*2}P)" if room["bet_amount"] > 0 else f"⚫ {winner_name}님이 오목에서 승리!", "omok")
+            # 관전 배팅 정산
+            await _settle_spectator_bets(db, "omok", room_id, result["winner"])
+        elif result["reason"] == "draw":
+            await db.execute(
+                "UPDATE omok_rooms SET board=?, move_count=?, status='FINISHED', win_reason='draw', finished_at=datetime('now','localtime') WHERE id=?",
+                (json.dumps(board), move_count, room_id)
+            )
+            # 무승부: 베팅금 환불
+            if room["bet_amount"] > 0:
+                await log_point_change(db, room["creator_id"], room["bet_amount"], "omok", "오목 무승부 환불")
+                await log_point_change(db, room["opponent_id"], room["bet_amount"], "omok", "오목 무승부 환불")
+            await _update_mmr(db, room["creator_id"], room["opponent_id"], "omok", "draw")
+            # 관전 배팅 무승부 환불
+            await _settle_spectator_bets(db, "omok", room_id, 0, is_draw=True)
+        else:
+            await db.execute(
+                "UPDATE omok_rooms SET board=?, current_turn=?, move_count=? WHERE id=?",
+                (json.dumps(board), next_turn, move_count, room_id)
+            )
+
+        await db.commit()
+        return {"board": board, "move_count": move_count, "result": result}
+    finally:
+        await db.close()
+
+
+@app.post("/api/omok/rooms/{room_id}/resign")
+async def omok_resign(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM omok_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "게임이 진행 중이 아닙니다")
+        uid = user["user_id"]
+        if uid != room["creator_id"] and uid != room["opponent_id"]:
+            raise HTTPException(400, "참가자가 아닙니다")
+
+        winner_id = room["opponent_id"] if uid == room["creator_id"] else room["creator_id"]
+        await db.execute(
+            "UPDATE omok_rooms SET status='FINISHED', winner_id=?, win_reason='resign', finished_at=datetime('now','localtime') WHERE id=?",
+            (winner_id, room_id)
+        )
+        if room["bet_amount"] > 0:
+            total_pot = room["bet_amount"] * 2
+            await log_point_change(db, winner_id, total_pot, "omok", f"오목 승리(기권) +{total_pot}P")
+        await _update_mmr(db, winner_id, uid, "omok", "win")
+        winner_name = (await db.execute_fetchall("SELECT nickname FROM users WHERE id=?", (winner_id,)))[0]["nickname"]
+        await insert_ticker(db, f"⚫ {winner_name}님이 오목에서 승리(상대 기권)!", "omok")
+        await _settle_spectator_bets(db, "omok", room_id, winner_id)
+        await db.commit()
+        return {"winner_id": winner_id}
+    finally:
+        await db.close()
+
+
+@app.post("/api/omok/rooms/{room_id}/undo_request")
+async def omok_undo_request(room_id: int, user=Depends(get_current_user)):
+    """한수 무르기 요청"""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM omok_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "게임이 진행 중이 아닙니다")
+        uid = user["user_id"]
+        if uid != room["creator_id"] and uid != room["opponent_id"]:
+            raise HTTPException(400, "참가자가 아닙니다")
+        if room["undo_request_by"] is not None:
+            raise HTTPException(400, "이미 무르기 요청이 있습니다")
+        if room["move_count"] == 0:
+            raise HTTPException(400, "무를 수가 없습니다")
+        # 방금 내가 둔 경우에만 요청 가능 (현재 상대 차례)
+        my_color = room["creator_color"] if uid == room["creator_id"] else ("W" if room["creator_color"] == "B" else "B")
+        if room["current_turn"] == my_color:
+            raise HTTPException(400, "아직 무르기를 요청할 수 없습니다 (내 차례)")
+        await db.execute("UPDATE omok_rooms SET undo_request_by=? WHERE id=?", (uid, room_id))
+        await db.commit()
+        return {"message": "무르기 요청이 전송되었습니다"}
+    finally:
+        await db.close()
+
+
+@app.post("/api/omok/rooms/{room_id}/undo_response")
+async def omok_undo_response(room_id: int, req: UndoResponseRequest, user=Depends(get_current_user)):
+    """한수 무르기 수락/거절"""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM omok_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "게임이 진행 중이 아닙니다")
+        if room["undo_request_by"] is None:
+            raise HTTPException(400, "무르기 요청이 없습니다")
+        uid = user["user_id"]
+        if room["undo_request_by"] == uid:
+            raise HTTPException(400, "자신의 요청에 응답할 수 없습니다")
+        if uid != room["creator_id"] and uid != room["opponent_id"]:
+            raise HTTPException(400, "참가자가 아닙니다")
+
+        if req.accept:
+            # 마지막 수를 삭제하고 보드 재구성
+            last_moves = await db.execute_fetchall(
+                "SELECT * FROM omok_moves WHERE room_id=? ORDER BY move_number DESC LIMIT 1",
+                (room_id,)
+            )
+            if not last_moves:
+                raise HTTPException(400, "무를 수가 없습니다")
+            last_move = last_moves[0]
+            await db.execute("DELETE FROM omok_moves WHERE id=?", (last_move["id"],))
+
+            # 보드 재구성
+            new_board = [[0]*OMOK_SIZE for _ in range(OMOK_SIZE)]
+            remaining = await db.execute_fetchall(
+                "SELECT * FROM omok_moves WHERE room_id=? ORDER BY move_number ASC",
+                (room_id,)
+            )
+            for m in remaining:
+                color = 1 if m["color"] == "B" else 2
+                new_board[m["y"]][m["x"]] = color
+
+            move_count = len(remaining)
+            restored_turn = last_move["color"]  # 요청자가 뒀던 색이 다시 차례
+            await db.execute(
+                "UPDATE omok_rooms SET board=?, current_turn=?, move_count=?, undo_request_by=NULL WHERE id=?",
+                (json.dumps(new_board), restored_turn, move_count, room_id)
+            )
+        else:
+            await db.execute("UPDATE omok_rooms SET undo_request_by=NULL WHERE id=?", (room_id,))
+
+        await db.commit()
+        return {"accepted": req.accept}
+    finally:
+        await db.close()
+
+
+@app.post("/api/omok/rooms/{room_id}/cancel")
+async def cancel_omok_room(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM omok_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404)
+        room = rows[0]
+        if room["creator_id"] != user["user_id"]:
+            raise HTTPException(400, "방장만 취소할 수 있습니다")
+        if room["status"] != "WAITING":
+            raise HTTPException(400, "대기 중인 방만 취소할 수 있습니다")
+        await db.execute("UPDATE omok_rooms SET status='CANCELLED' WHERE id=?", (room_id,))
+        if room["bet_amount"] > 0:
+            await log_point_change(db, user["user_id"], room["bet_amount"], "omok", "오목 방 취소 환불")
+        await db.commit()
+        return {"message": "방이 취소되었습니다"}
+    finally:
+        await db.close()
+
+
+@app.post("/api/omok/rooms/{room_id}/rematch")
+async def omok_rematch(room_id: int, user=Depends(get_current_user)):
+    """한판더하기: 흑백 스왑하고 새 게임"""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM omok_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404)
+        room = rows[0]
+        if room["status"] != "FINISHED":
+            raise HTTPException(400, "끝난 게임만 재경기 가능합니다")
+        uid = user["user_id"]
+        if uid != room["creator_id"] and uid != room["opponent_id"]:
+            raise HTTPException(400, "참가자가 아닙니다")
+
+        # 베팅금 차감
+        if room["bet_amount"] > 0:
+            for pid in [room["creator_id"], room["opponent_id"]]:
+                bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (pid,))
+                if not bal or bal[0]["points"] < room["bet_amount"]:
+                    raise HTTPException(400, "포인트가 부족한 참가자가 있습니다")
+            for pid in [room["creator_id"], room["opponent_id"]]:
+                await log_point_change(db, pid, -room["bet_amount"], "omok", f"오목 재경기 베팅 ({room['bet_amount']}P)")
+
+        # 흑백 스왑
+        new_creator_color = "W" if room["creator_color"] == "B" else "B"
+        board = json.dumps(_empty_board())
+        await db.execute(
+            """UPDATE omok_rooms SET status='PLAYING', board=?, current_turn='B',
+               creator_color=?, winner_id=NULL, win_reason=NULL, move_count=0,
+               game_number=?, finished_at=NULL WHERE id=?""",
+            (board, new_creator_color, room["game_number"] + 1, room_id)
+        )
+        # 수순 삭제
+        await db.execute("DELETE FROM omok_moves WHERE room_id = ?", (room_id,))
+        await db.commit()
+        return {"message": "재경기 시작", "creator_color": new_creator_color}
+    finally:
+        await db.close()
+
+
+@app.get("/api/omok/history")
+async def omok_history(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT r.*, u1.nickname as creator_name, u2.nickname as opponent_name, uw.nickname as winner_name
+               FROM omok_rooms r
+               JOIN users u1 ON r.creator_id = u1.id
+               LEFT JOIN users u2 ON r.opponent_id = u2.id
+               LEFT JOIN users uw ON r.winner_id = uw.id
+               WHERE (r.creator_id = ? OR r.opponent_id = ?) AND r.status = 'FINISHED'
+               ORDER BY r.finished_at DESC LIMIT 30""",
+            (user["user_id"], user["user_id"])
+        )
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# CHESS (체스)
+# ═══════════════════════════════════════════════
+
+INITIAL_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+
+@app.post("/api/chess/rooms")
+async def create_chess_room(req: ChessRoomCreateRequest, user=Depends(get_current_user)):
+    if req.bet_amount < 0:
+        raise HTTPException(400, "베팅 금액이 올바르지 않습니다")
+    db = await get_db()
+    try:
+        existing = await db.execute_fetchall(
+            "SELECT id FROM chess_rooms WHERE (creator_id = ? OR opponent_id = ?) AND status IN ('WAITING','PLAYING')",
+            (user["user_id"], user["user_id"])
+        )
+        if existing:
+            raise HTTPException(400, "이미 참여 중인 체스 방이 있습니다")
+
+        if req.bet_amount > 0:
+            bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],))
+            if not bal or bal[0]["points"] < req.bet_amount:
+                raise HTTPException(400, "포인트가 부족합니다")
+            await log_point_change(db, user["user_id"], -req.bet_amount, "chess", f"체스 베팅 ({req.bet_amount}P)")
+
+        # 방장은 랜덤 컬러 (w/b)
+        creator_color = random.choice(["w", "b"])
+        cursor = await db.execute(
+            """INSERT INTO chess_rooms (creator_id, bet_amount, fen, current_turn, creator_color)
+               VALUES (?, ?, ?, 'w', ?)""",
+            (user["user_id"], req.bet_amount, INITIAL_FEN, creator_color)
+        )
+        room_id = cursor.lastrowid
+        await db.commit()
+        return {"room_id": room_id, "creator_color": creator_color}
+    finally:
+        await db.close()
+
+
+@app.get("/api/chess/rooms")
+async def list_chess_rooms(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT r.*, u1.nickname as creator_name, u2.nickname as opponent_name
+               FROM chess_rooms r
+               JOIN users u1 ON r.creator_id = u1.id
+               LEFT JOIN users u2 ON r.opponent_id = u2.id
+               WHERE r.status IN ('WAITING','PLAYING')
+               ORDER BY r.created_at DESC"""
+        )
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+@app.get("/api/chess/rooms/{room_id}")
+async def get_chess_room(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT r.*, u1.nickname as creator_name, u2.nickname as opponent_name
+               FROM chess_rooms r
+               JOIN users u1 ON r.creator_id = u1.id
+               LEFT JOIN users u2 ON r.opponent_id = u2.id
+               WHERE r.id = ?""",
+            (room_id,)
+        )
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = dict(rows[0])
+        # 승자 닉네임
+        if room.get("winner_id"):
+            w = await db.execute_fetchall("SELECT nickname FROM users WHERE id=?", (room["winner_id"],))
+            room["winner_name"] = w[0]["nickname"] if w else None
+        moves = await db.execute_fetchall(
+            "SELECT * FROM chess_moves WHERE room_id = ? ORDER BY move_number", (room_id,)
+        )
+        room["moves"] = [dict(m) for m in moves]
+        return room
+    finally:
+        await db.close()
+
+
+@app.post("/api/chess/rooms/{room_id}/join")
+async def join_chess_room(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM chess_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404)
+        room = rows[0]
+        if room["status"] != "WAITING":
+            raise HTTPException(400, "참가할 수 없는 상태입니다")
+        if room["creator_id"] == user["user_id"]:
+            raise HTTPException(400, "자신의 방에 참가할 수 없습니다")
+
+        existing = await db.execute_fetchall(
+            "SELECT id FROM chess_rooms WHERE (creator_id = ? OR opponent_id = ?) AND status IN ('WAITING','PLAYING')",
+            (user["user_id"], user["user_id"])
+        )
+        if existing:
+            raise HTTPException(400, "이미 참여 중인 체스 방이 있습니다")
+
+        if room["bet_amount"] > 0:
+            bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (user["user_id"],))
+            if not bal or bal[0]["points"] < room["bet_amount"]:
+                raise HTTPException(400, "포인트가 부족합니다")
+            await log_point_change(db, user["user_id"], -room["bet_amount"], "chess", f"체스 베팅 ({room['bet_amount']}P)")
+
+        await db.execute(
+            "UPDATE chess_rooms SET opponent_id = ?, status = 'PLAYING' WHERE id = ?",
+            (user["user_id"], room_id)
+        )
+        await db.commit()
+        return {"message": "입장 완료"}
+    finally:
+        await db.close()
+
+
+@app.post("/api/chess/rooms/{room_id}/move")
+async def chess_move(room_id: int, req: ChessMoveRequest, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM chess_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404)
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "게임이 진행 중이 아닙니다")
+
+        uid = user["user_id"]
+        # 차례 확인
+        if room["current_turn"] == room["creator_color"]:
+            if uid != room["creator_id"]:
+                raise HTTPException(400, "상대방의 차례입니다")
+        else:
+            if uid != room["opponent_id"]:
+                raise HTTPException(400, "상대방의 차례입니다")
+
+        move_count = room["move_count"] + 1
+        next_turn = "b" if room["current_turn"] == "w" else "w"
+
+        # 수순 기록
+        await db.execute(
+            "INSERT INTO chess_moves (room_id, user_id, move_from, move_to, piece, promotion, fen_after, move_number) VALUES (?,?,?,?,?,?,?,?)",
+            (room_id, uid, req.move_from, req.move_to, "", req.promotion, req.fen_after, move_count)
+        )
+
+        result = {"winner": None, "reason": None}
+
+        if req.is_checkmate:
+            result["winner"] = uid
+            result["reason"] = "checkmate"
+        elif req.is_stalemate or req.is_draw:
+            result["reason"] = "draw"
+
+        if result["winner"]:
+            await db.execute(
+                "UPDATE chess_rooms SET fen=?, move_count=?, status='FINISHED', winner_id=?, win_reason=?, last_move=?, finished_at=datetime('now','localtime') WHERE id=?",
+                (req.fen_after, move_count, result["winner"], result["reason"], f"{req.move_from}-{req.move_to}", room_id)
+            )
+            if room["bet_amount"] > 0:
+                total_pot = room["bet_amount"] * 2
+                await log_point_change(db, result["winner"], total_pot, "chess", f"체스 승리 +{total_pot}P")
+            loser_id = room["opponent_id"] if result["winner"] == room["creator_id"] else room["creator_id"]
+            await _update_mmr(db, result["winner"], loser_id, "chess", "win")
+            winner_name = (await db.execute_fetchall("SELECT nickname FROM users WHERE id=?", (result["winner"],)))[0]["nickname"]
+            await insert_ticker(db, f"♟️ {winner_name}님이 체스에서 승리! (+{room['bet_amount']*2}P)" if room["bet_amount"] > 0 else f"♟️ {winner_name}님이 체스에서 승리!", "chess")
+            await _settle_spectator_bets(db, "chess", room_id, result["winner"])
+        elif result["reason"] == "draw":
+            await db.execute(
+                "UPDATE chess_rooms SET fen=?, move_count=?, status='FINISHED', win_reason='draw', last_move=?, finished_at=datetime('now','localtime') WHERE id=?",
+                (req.fen_after, move_count, f"{req.move_from}-{req.move_to}", room_id)
+            )
+            if room["bet_amount"] > 0:
+                await log_point_change(db, room["creator_id"], room["bet_amount"], "chess", "체스 무승부 환불")
+                await log_point_change(db, room["opponent_id"], room["bet_amount"], "chess", "체스 무승부 환불")
+            await _update_mmr(db, room["creator_id"], room["opponent_id"], "chess", "draw")
+            await _settle_spectator_bets(db, "chess", room_id, 0, is_draw=True)
+        else:
+            await db.execute(
+                "UPDATE chess_rooms SET fen=?, current_turn=?, move_count=?, last_move=? WHERE id=?",
+                (req.fen_after, next_turn, move_count, f"{req.move_from}-{req.move_to}", room_id)
+            )
+
+        await db.commit()
+        return {"fen": req.fen_after, "move_count": move_count, "result": result}
+    finally:
+        await db.close()
+
+
+@app.post("/api/chess/rooms/{room_id}/resign")
+async def chess_resign(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM chess_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404)
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "게임이 진행 중이 아닙니다")
+        uid = user["user_id"]
+        if uid != room["creator_id"] and uid != room["opponent_id"]:
+            raise HTTPException(400, "참가자가 아닙니다")
+
+        winner_id = room["opponent_id"] if uid == room["creator_id"] else room["creator_id"]
+        await db.execute(
+            "UPDATE chess_rooms SET status='FINISHED', winner_id=?, win_reason='resign', finished_at=datetime('now','localtime') WHERE id=?",
+            (winner_id, room_id)
+        )
+        if room["bet_amount"] > 0:
+            total_pot = room["bet_amount"] * 2
+            await log_point_change(db, winner_id, total_pot, "chess", f"체스 승리(기권) +{total_pot}P")
+        await _update_mmr(db, winner_id, uid, "chess", "win")
+        winner_name = (await db.execute_fetchall("SELECT nickname FROM users WHERE id=?", (winner_id,)))[0]["nickname"]
+        await insert_ticker(db, f"♟️ {winner_name}님이 체스에서 승리(상대 기권)!", "chess")
+        await _settle_spectator_bets(db, "chess", room_id, winner_id)
+        await db.commit()
+        return {"winner_id": winner_id}
+    finally:
+        await db.close()
+
+
+@app.post("/api/chess/rooms/{room_id}/undo_request")
+async def chess_undo_request(room_id: int, user=Depends(get_current_user)):
+    """한수 무르기 요청"""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM chess_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "게임이 진행 중이 아닙니다")
+        uid = user["user_id"]
+        if uid != room["creator_id"] and uid != room["opponent_id"]:
+            raise HTTPException(400, "참가자가 아닙니다")
+        if room["undo_request_by"] is not None:
+            raise HTTPException(400, "이미 무르기 요청이 있습니다")
+        if room["move_count"] == 0:
+            raise HTTPException(400, "무를 수가 없습니다")
+        my_color = room["creator_color"] if uid == room["creator_id"] else ("b" if room["creator_color"] == "w" else "w")
+        if room["current_turn"] == my_color:
+            raise HTTPException(400, "아직 무르기를 요청할 수 없습니다 (내 차례)")
+        await db.execute("UPDATE chess_rooms SET undo_request_by=? WHERE id=?", (uid, room_id))
+        await db.commit()
+        return {"message": "무르기 요청이 전송되었습니다"}
+    finally:
+        await db.close()
+
+
+@app.post("/api/chess/rooms/{room_id}/undo_response")
+async def chess_undo_response(room_id: int, req: UndoResponseRequest, user=Depends(get_current_user)):
+    """한수 무르기 수락/거절"""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM chess_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "게임이 진행 중이 아닙니다")
+        if room["undo_request_by"] is None:
+            raise HTTPException(400, "무르기 요청이 없습니다")
+        uid = user["user_id"]
+        if room["undo_request_by"] == uid:
+            raise HTTPException(400, "자신의 요청에 응답할 수 없습니다")
+        if uid != room["creator_id"] and uid != room["opponent_id"]:
+            raise HTTPException(400, "참가자가 아닙니다")
+
+        if req.accept:
+            # 마지막 수 삭제 후 이전 FEN으로 복원
+            last_moves = await db.execute_fetchall(
+                "SELECT * FROM chess_moves WHERE room_id=? ORDER BY move_number DESC LIMIT 1",
+                (room_id,)
+            )
+            if not last_moves:
+                raise HTTPException(400, "무를 수가 없습니다")
+            last_move = last_moves[0]
+            await db.execute("DELETE FROM chess_moves WHERE id=?", (last_move["id"],))
+
+            # 이전 FEN 복원
+            prev_moves = await db.execute_fetchall(
+                "SELECT * FROM chess_moves WHERE room_id=? ORDER BY move_number DESC LIMIT 1",
+                (room_id,)
+            )
+            if prev_moves:
+                prev_fen = prev_moves[0]["fen_after"]
+                prev_last_move = f"{prev_moves[0]['move_from']}-{prev_moves[0]['move_to']}"
+            else:
+                prev_fen = INITIAL_FEN
+                prev_last_move = None
+
+            move_count = last_move["move_number"] - 1
+            # 무른 수를 둔 플레이어 색깔 다시 차례
+            # last_move의 user_id가 요청자(undo_request_by)
+            requester_color = room["creator_color"] if room["undo_request_by"] == room["creator_id"] else ("b" if room["creator_color"] == "w" else "w")
+            # FEN에서 turn 추출 대신 직접 계산
+            restored_turn = requester_color
+
+            await db.execute(
+                "UPDATE chess_rooms SET fen=?, current_turn=?, move_count=?, last_move=?, undo_request_by=NULL WHERE id=?",
+                (prev_fen, restored_turn, move_count, prev_last_move, room_id)
+            )
+        else:
+            await db.execute("UPDATE chess_rooms SET undo_request_by=NULL WHERE id=?", (room_id,))
+
+        await db.commit()
+        return {"accepted": req.accept}
+    finally:
+        await db.close()
+
+
+@app.post("/api/chess/rooms/{room_id}/cancel")
+async def cancel_chess_room(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM chess_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404)
+        room = rows[0]
+        if room["creator_id"] != user["user_id"]:
+            raise HTTPException(400, "방장만 취소할 수 있습니다")
+        if room["status"] != "WAITING":
+            raise HTTPException(400, "대기 중인 방만 취소할 수 있습니다")
+        await db.execute("UPDATE chess_rooms SET status='CANCELLED' WHERE id=?", (room_id,))
+        if room["bet_amount"] > 0:
+            await log_point_change(db, user["user_id"], room["bet_amount"], "chess", "체스 방 취소 환불")
+        await db.commit()
+        return {"message": "방이 취소되었습니다"}
+    finally:
+        await db.close()
+
+
+@app.post("/api/chess/rooms/{room_id}/rematch")
+async def chess_rematch(room_id: int, user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall("SELECT * FROM chess_rooms WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404)
+        room = rows[0]
+        if room["status"] != "FINISHED":
+            raise HTTPException(400, "끝난 게임만 재경기 가능합니다")
+        uid = user["user_id"]
+        if uid != room["creator_id"] and uid != room["opponent_id"]:
+            raise HTTPException(400, "참가자가 아닙니다")
+
+        if room["bet_amount"] > 0:
+            for pid in [room["creator_id"], room["opponent_id"]]:
+                bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (pid,))
+                if not bal or bal[0]["points"] < room["bet_amount"]:
+                    raise HTTPException(400, "포인트가 부족한 참가자가 있습니다")
+            for pid in [room["creator_id"], room["opponent_id"]]:
+                await log_point_change(db, pid, -room["bet_amount"], "chess", f"체스 재경기 베팅 ({room['bet_amount']}P)")
+
+        new_creator_color = "b" if room["creator_color"] == "w" else "w"
+        await db.execute(
+            """UPDATE chess_rooms SET status='PLAYING', fen=?, current_turn='w',
+               creator_color=?, winner_id=NULL, win_reason=NULL, move_count=0,
+               last_move=NULL, game_number=?, finished_at=NULL WHERE id=?""",
+            (INITIAL_FEN, new_creator_color, room["game_number"] + 1, room_id)
+        )
+        await db.execute("DELETE FROM chess_moves WHERE room_id = ?", (room_id,))
+        await db.commit()
+        return {"message": "재경기 시작", "creator_color": new_creator_color}
+    finally:
+        await db.close()
+
+
+@app.get("/api/chess/history")
+async def chess_history(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT r.*, u1.nickname as creator_name, u2.nickname as opponent_name, uw.nickname as winner_name
+               FROM chess_rooms r
+               JOIN users u1 ON r.creator_id = u1.id
+               LEFT JOIN users u2 ON r.opponent_id = u2.id
+               LEFT JOIN users uw ON r.winner_id = uw.id
+               WHERE (r.creator_id = ? OR r.opponent_id = ?) AND r.status = 'FINISHED'
+               ORDER BY r.finished_at DESC LIMIT 30""",
+            (user["user_id"], user["user_id"])
+        )
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# MMR & GAME LEADERBOARD
+# ═══════════════════════════════════════════════
+
+async def _update_mmr(db, winner_id, loser_id, game_type, result):
+    """MMR 업데이트. result = 'win' | 'draw'"""
+    # 현재 MMR 조회/생성
+    for uid in [winner_id, loser_id]:
+        await db.execute(
+            "INSERT OR IGNORE INTO game_mmr (user_id, game_type) VALUES (?, ?)",
+            (uid, game_type)
+        )
+    w_rows = await db.execute_fetchall("SELECT * FROM game_mmr WHERE user_id=? AND game_type=?", (winner_id, game_type))
+    l_rows = await db.execute_fetchall("SELECT * FROM game_mmr WHERE user_id=? AND game_type=?", (loser_id, game_type))
+    w_mmr = w_rows[0]["mmr"]
+    l_mmr = l_rows[0]["mmr"]
+
+    if result == "win":
+        w_change, l_change = _calc_mmr_change(w_mmr, l_mmr)
+        await db.execute("UPDATE game_mmr SET mmr=mmr+?, wins=wins+1 WHERE user_id=? AND game_type=?", (w_change, winner_id, game_type))
+        await db.execute("UPDATE game_mmr SET mmr=MAX(0,mmr+?), losses=losses+1 WHERE user_id=? AND game_type=?", (l_change, loser_id, game_type))
+    elif result == "draw":
+        # 무승부: 약간의 MMR 이동 (낮은 쪽이 조금 오름)
+        expected_w = 1 / (1 + 10**((l_mmr - w_mmr) / 400))
+        w_change = round(16 * (0.5 - expected_w))
+        await db.execute("UPDATE game_mmr SET mmr=MAX(0,mmr+?), draws=draws+1 WHERE user_id=? AND game_type=?", (w_change, winner_id, game_type))
+        await db.execute("UPDATE game_mmr SET mmr=MAX(0,mmr+?), draws=draws+1 WHERE user_id=? AND game_type=?", (-w_change, loser_id, game_type))
+
+
+@app.get("/api/mmr/leaderboard")
+async def mmr_leaderboard(game_type: str = "omok", user=Depends(get_current_user)):
+    if game_type not in ("omok", "chess"):
+        raise HTTPException(400, "유효하지 않은 게임 타입")
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT m.*, u.nickname
+               FROM game_mmr m JOIN users u ON m.user_id = u.id
+               WHERE m.game_type = ?
+               ORDER BY m.mmr DESC LIMIT 50""",
+            (game_type,)
+        )
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+@app.get("/api/mmr/me")
+async def my_mmr(user=Depends(get_current_user)):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT * FROM game_mmr WHERE user_id = ?", (user["user_id"],)
+        )
+        result = {}
+        for r in rows:
+            result[r["game_type"]] = dict(r)
+        return result
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# SPECTATOR BETTING (관전 배팅)
+# ═══════════════════════════════════════════════
+
+async def _settle_spectator_bets(db, game_type: str, room_id: int, winner_id: int, is_draw: bool = False):
+    """게임 종료 시 관전 배팅 정산"""
+    bets = await db.execute_fetchall(
+        "SELECT * FROM spectator_bets WHERE game_type = ? AND room_id = ? AND status = 'PENDING'",
+        (game_type, room_id)
+    )
+    if not bets:
+        return
+
+    if is_draw:
+        # 무승부: 전액 환불
+        for b in bets:
+            await log_point_change(db, b["user_id"], b["amount"], "관전배팅", f"관전배팅 무승부 환불 +{b['amount']}P")
+            await db.execute("UPDATE spectator_bets SET status='REFUNDED', payout=? WHERE id=?", (b["amount"], b["id"]))
+        return
+
+    # 승자/패자 풀 계산
+    total_pool = sum(b["amount"] for b in bets)
+    winner_pool = sum(b["amount"] for b in bets if b["predicted_winner_id"] == winner_id)
+
+    if winner_pool == 0:
+        # 아무도 맞추지 못함: 전액 환불
+        for b in bets:
+            await log_point_change(db, b["user_id"], b["amount"], "관전배팅", f"관전배팅 환불 (승자 예측자 없음)")
+            await db.execute("UPDATE spectator_bets SET status='REFUNDED', payout=? WHERE id=?", (b["amount"], b["id"]))
+        return
+
+    # 비례 배분 정산
+    for b in bets:
+        if b["predicted_winner_id"] == winner_id:
+            payout = int(total_pool * (b["amount"] / winner_pool))
+            profit = payout - b["amount"]
+            await log_point_change(db, b["user_id"], profit, "관전배팅", f"관전배팅 적중! +{profit}P (배당 {payout/b['amount']:.2f}x)")
+            await db.execute("UPDATE spectator_bets SET status='WON', payout=? WHERE id=?", (payout, b["id"]))
+        else:
+            await db.execute("UPDATE spectator_bets SET status='LOST', payout=0 WHERE id=?", (b["id"],))
+
+
+@app.post("/api/spectator-bet/{game_type}/{room_id}")
+async def place_spectator_bet(game_type: str, room_id: int, req: SpectatorBetRequest, user=Depends(get_current_user)):
+    """관전 배팅 (오목/체스 진행 중인 게임에 승자 예측 배팅)"""
+    if game_type not in ("omok", "chess"):
+        raise HTTPException(400, "omok 또는 chess만 가능합니다")
+    if req.amount <= 0:
+        raise HTTPException(400, "배팅 포인트는 1 이상이어야 합니다")
+
+    db = await get_db()
+    try:
+        # 게임 상태 확인
+        table = "omok_rooms" if game_type == "omok" else "chess_rooms"
+        rows = await db.execute_fetchall(f"SELECT * FROM {table} WHERE id = ?", (room_id,))
+        if not rows:
+            raise HTTPException(404, "방을 찾을 수 없습니다")
+        room = rows[0]
+        if room["status"] != "PLAYING":
+            raise HTTPException(400, "진행 중인 게임에만 배팅할 수 있습니다")
+
+        # 참가자는 배팅 불가
+        uid = user["user_id"]
+        if uid == room["creator_id"] or uid == room["opponent_id"]:
+            raise HTTPException(400, "게임 참가자는 관전 배팅할 수 없습니다")
+
+        # 예측 대상이 게임 참가자인지 확인
+        if req.predicted_winner_id not in (room["creator_id"], room["opponent_id"]):
+            raise HTTPException(400, "유효하지 않은 예측 대상입니다")
+
+        # 중복 배팅 확인
+        existing = await db.execute_fetchall(
+            "SELECT id FROM spectator_bets WHERE game_type=? AND room_id=? AND user_id=?",
+            (game_type, room_id, uid)
+        )
+        if existing:
+            raise HTTPException(400, "이미 이 게임에 배팅했습니다")
+
+        # 포인트 확인 & 차감
+        bal = await db.execute_fetchall("SELECT points FROM point_balances WHERE user_id = ?", (uid,))
+        if not bal or bal[0]["points"] < req.amount:
+            raise HTTPException(400, "포인트가 부족합니다")
+
+        await log_point_change(db, uid, -req.amount, "관전배팅", f"관전배팅 ({game_type} #{room_id})")
+        await db.execute(
+            "INSERT INTO spectator_bets (game_type, room_id, user_id, predicted_winner_id, amount) VALUES (?,?,?,?,?)",
+            (game_type, room_id, uid, req.predicted_winner_id, req.amount)
+        )
+        await db.commit()
+
+        # 현재 배팅 현황 반환
+        bets = await db.execute_fetchall(
+            """SELECT sb.*, u.nickname FROM spectator_bets sb
+               JOIN users u ON sb.user_id = u.id
+               WHERE sb.game_type=? AND sb.room_id=? AND sb.status='PENDING'""",
+            (game_type, room_id)
+        )
+        return {"message": f"{req.amount}P 관전 배팅 완료!", "bets": [dict(b) for b in bets]}
+    finally:
+        await db.close()
+
+
+@app.get("/api/spectator-bet/{game_type}/{room_id}")
+async def get_spectator_bets(game_type: str, room_id: int, user=Depends(get_current_user)):
+    """관전 배팅 현황 조회"""
+    db = await get_db()
+    try:
+        bets = await db.execute_fetchall(
+            """SELECT sb.*, u.nickname,
+                      pw.nickname as predicted_winner_name
+               FROM spectator_bets sb
+               JOIN users u ON sb.user_id = u.id
+               JOIN users pw ON sb.predicted_winner_id = pw.id
+               WHERE sb.game_type=? AND sb.room_id=?
+               ORDER BY sb.created_at""",
+            (game_type, room_id)
+        )
+        total_pool = sum(b["amount"] for b in bets if b["status"] == "PENDING")
+        my_bet = None
+        for b in bets:
+            if b["user_id"] == user["user_id"]:
+                my_bet = dict(b)
+        return {
+            "bets": [dict(b) for b in bets],
+            "total_pool": total_pool,
+            "my_bet": my_bet,
+        }
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════
+# WEEKLY REWARDS (주간 보상)
+# ═══════════════════════════════════════════════
+
+WEEKLY_REWARDS = {1: 3000, 2: 2000, 3: 1000}  # 1등 3000P, 2등 2000P, 3등 1000P
+
+
+def _get_week_range(reference_date=None):
+    """이번 주 월요일~일요일 범위 반환"""
+    if reference_date is None:
+        reference_date = dt.now()
+    monday = reference_date - timedelta(days=reference_date.weekday())
+    sunday = monday + timedelta(days=6)
+    return monday.strftime("%Y-%m-%d"), sunday.strftime("%Y-%m-%d")
+
+
+def _get_last_week_range():
+    """지난 주 월요일~일요일 범위 반환"""
+    today = dt.now()
+    last_monday = today - timedelta(days=today.weekday() + 7)
+    last_sunday = last_monday + timedelta(days=6)
+    return last_monday.strftime("%Y-%m-%d"), last_sunday.strftime("%Y-%m-%d")
+
+
+@app.get("/api/weekly/omok-leaderboard")
+async def weekly_omok_leaderboard(user=Depends(get_current_user)):
+    """이번 주 오목 MMR 상위 리더보드"""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            """SELECT m.*, u.nickname
+               FROM game_mmr m JOIN users u ON m.user_id = u.id
+               WHERE m.game_type = 'omok'
+               ORDER BY m.mmr DESC LIMIT 50"""
+        )
+        week_start, week_end = _get_week_range()
+        # 이번 주 보상 지급 여부 확인
+        already_rewarded = await db.execute_fetchall(
+            "SELECT id FROM weekly_rewards WHERE reward_type='omok' AND week_start=?", (week_start,)
+        )
+        return {
+            "leaderboard": [dict(r) for r in rows],
+            "week_start": week_start,
+            "week_end": week_end,
+            "rewarded": len(already_rewarded) > 0,
+        }
+    finally:
+        await db.close()
+
+
+@app.get("/api/weekly/nordle-leaderboard")
+async def weekly_nordle_leaderboard(user=Depends(get_current_user)):
+    """이번 주 노들 주간 리더보드 (풀이 수 기준)"""
+    db = await get_db()
+    try:
+        week_start, week_end = _get_week_range()
+        rows = await db.execute_fetchall(
+            """SELECT g.user_id, u.nickname,
+                      COUNT(*) as solved_count,
+                      ROUND(AVG(json_array_length(g.guesses)), 1) as avg_attempts,
+                      MIN(json_array_length(g.guesses)) as best_attempts
+               FROM nordle_games g
+               JOIN users u ON g.user_id = u.id
+               WHERE g.solved = 1 AND g.date BETWEEN ? AND ?
+               GROUP BY g.user_id
+               ORDER BY solved_count DESC, avg_attempts ASC
+               LIMIT 50""",
+            (week_start, week_end)
+        )
+        already_rewarded = await db.execute_fetchall(
+            "SELECT id FROM weekly_rewards WHERE reward_type='nordle' AND week_start=?", (week_start,)
+        )
+        return {
+            "leaderboard": [dict(r) for r in rows],
+            "week_start": week_start,
+            "week_end": week_end,
+            "rewarded": len(already_rewarded) > 0,
+        }
+    finally:
+        await db.close()
+
+
+@app.post("/api/admin/weekly-rewards")
+async def admin_give_weekly_rewards(reward_type: str = "all", user=Depends(get_admin_user)):
+    """주간 보상 지급 (omok, nordle, 또는 all)"""
+    db = await get_db()
+    try:
+        week_start, week_end = _get_week_range()
+        results = []
+
+        if reward_type in ("omok", "all"):
+            # 이미 지급 체크
+            already = await db.execute_fetchall(
+                "SELECT id FROM weekly_rewards WHERE reward_type='omok' AND week_start=?", (week_start,)
+            )
+            if already:
+                results.append("오목: 이미 이번 주 보상 지급 완료")
+            else:
+                rows = await db.execute_fetchall(
+                    """SELECT m.user_id, u.nickname, m.mmr
+                       FROM game_mmr m JOIN users u ON m.user_id = u.id
+                       WHERE m.game_type = 'omok' AND (m.wins + m.losses) > 0
+                       ORDER BY m.mmr DESC LIMIT 3"""
+                )
+                for i, r in enumerate(rows):
+                    rank = i + 1
+                    amount = WEEKLY_REWARDS.get(rank, 0)
+                    if amount > 0:
+                        await log_point_change(db, r["user_id"], amount, "주간보상", f"오목 주간 {rank}등 보상 (+{amount}P)")
+                        await db.execute(
+                            "INSERT INTO weekly_rewards (reward_type, week_start, week_end, user_id, rank, amount) VALUES (?,?,?,?,?,?)",
+                            ("omok", week_start, week_end, r["user_id"], rank, amount)
+                        )
+                        results.append(f"오목 {rank}등 {r['nickname']} +{amount}P (MMR {r['mmr']})")
+                if not rows:
+                    results.append("오목: 이번 주 대국 기록 없음")
+
+        if reward_type in ("nordle", "all"):
+            already = await db.execute_fetchall(
+                "SELECT id FROM weekly_rewards WHERE reward_type='nordle' AND week_start=?", (week_start,)
+            )
+            if already:
+                results.append("노들: 이미 이번 주 보상 지급 완료")
+            else:
+                rows = await db.execute_fetchall(
+                    """SELECT g.user_id, u.nickname,
+                              COUNT(*) as solved_count,
+                              ROUND(AVG(json_array_length(g.guesses)), 1) as avg_attempts
+                       FROM nordle_games g
+                       JOIN users u ON g.user_id = u.id
+                       WHERE g.solved = 1 AND g.date BETWEEN ? AND ?
+                       GROUP BY g.user_id
+                       ORDER BY solved_count DESC, avg_attempts ASC
+                       LIMIT 3""",
+                    (week_start, week_end)
+                )
+                for i, r in enumerate(rows):
+                    rank = i + 1
+                    amount = WEEKLY_REWARDS.get(rank, 0)
+                    if amount > 0:
+                        await log_point_change(db, r["user_id"], amount, "주간보상", f"노들 주간 {rank}등 보상 (+{amount}P)")
+                        await db.execute(
+                            "INSERT INTO weekly_rewards (reward_type, week_start, week_end, user_id, rank, amount) VALUES (?,?,?,?,?,?)",
+                            ("nordle", week_start, week_end, r["user_id"], rank, amount)
+                        )
+                        results.append(f"노들 {rank}등 {r['nickname']} +{amount}P ({r['solved_count']}문제)")
+                if not rows:
+                    results.append("노들: 이번 주 풀이 기록 없음")
+
+        await db.commit()
+        # 전광판 알림
+        if any("등" in r for r in results):
+            await insert_ticker(db, f"🏆 주간 보상 지급! {' | '.join(r for r in results if '등' in r)}", "weekly_reward")
+            await db.commit()
+        return {"message": " | ".join(results)}
     finally:
         await db.close()
 

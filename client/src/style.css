@@ -853,6 +853,19 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 }
 
 .chat-msg:hover { background: var(--surface2); }
+.chat-delete {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--danger, #e74c3c);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0.6;
+}
+.chat-delete:hover { opacity: 1; }
+.chat-msg:hover .chat-delete { display: inline; }
 
 .chat-nick {
   font-weight: 600;
@@ -960,3 +973,263 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 }
 .btn-danger:hover { opacity: 0.85; }
 .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ═══════════ OMOK (오목) ═══════════ */
+.omok-board-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+  overflow-x: auto;
+}
+.omok-board {
+  display: grid;
+  grid-template-columns: repeat(19, 32px);
+  grid-template-rows: repeat(19, 32px);
+  background: #d4a843;
+  border: 2px solid #8b6914;
+  border-radius: 4px;
+  position: relative;
+}
+.omok-cell {
+  width: 32px;
+  height: 32px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Grid lines */
+  background:
+    linear-gradient(to right, transparent calc(50% - 0.5px), #8b6914 calc(50% - 0.5px), #8b6914 calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(50% - 0.5px), #8b6914 calc(50% - 0.5px), #8b6914 calc(50% + 0.5px), transparent calc(50% + 0.5px));
+}
+.omok-cell.clickable { cursor: pointer; }
+.omok-cell.clickable:hover::after {
+  content: '';
+  position: absolute;
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.15);
+  z-index: 1;
+}
+.omok-star {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #6b5010;
+  position: absolute;
+  z-index: 0;
+}
+.omok-stone {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  z-index: 2;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.omok-stone.black {
+  background: radial-gradient(circle at 35% 35%, #555, #111);
+  box-shadow: 1px 2px 4px rgba(0,0,0,0.5);
+}
+.omok-stone.white {
+  background: radial-gradient(circle at 35% 35%, #fff, #ccc);
+  box-shadow: 1px 2px 4px rgba(0,0,0,0.3);
+}
+.omok-stone.last-move .last-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+}
+.omok-stone.black .last-dot { background: #ef4444; }
+.omok-stone.white .last-dot { background: #ef4444; }
+
+/* ═══════════ CHESS (체스) ═══════════ */
+.chess-board-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0;
+}
+.chess-board {
+  display: grid;
+  grid-template-columns: repeat(8, 48px);
+  grid-template-rows: repeat(8, 48px);
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.chess-cell {
+  width: 48px; height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+.chess-cell.light { background: #f0d9b5; }
+.chess-cell.dark { background: #b58863; }
+.chess-cell.selected { background: #f6f669 !important; }
+.chess-cell.target { background: rgba(0, 100, 0, 0.25) !important; }
+.chess-cell.last-move { background: rgba(255,255,0,0.2) !important; }
+.chess-piece { font-size: 32px; line-height: 1; z-index: 2; }
+.chess-piece.white-piece { filter: drop-shadow(0 1px 1px rgba(0,0,0,0.3)); }
+.chess-piece.black-piece { filter: drop-shadow(0 1px 1px rgba(0,0,0,0.3)); }
+.move-dot {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: rgba(0, 100, 0, 0.4);
+  z-index: 1;
+}
+.capture-ring {
+  position: absolute;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  border: 3px solid rgba(0, 100, 0, 0.4);
+  z-index: 1;
+}
+.chess-coord-row {
+  position: absolute;
+  top: 2px; left: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  z-index: 3;
+  pointer-events: none;
+}
+.chess-coord-col {
+  position: absolute;
+  bottom: 1px; right: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  z-index: 3;
+  pointer-events: none;
+}
+.chess-cell.light .chess-coord-row,
+.chess-cell.light .chess-coord-col { color: #b58863; }
+.chess-cell.dark .chess-coord-row,
+.chess-cell.dark .chess-coord-col { color: #f0d9b5; }
+.chess-promo-btn { font-size: 28px !important; padding: 8px 16px !important; }
+
+/* ═══════════ Excel Theme: 오목 스프레드시트 ═══════════ */
+[data-theme="excel"] .omok-excel-col-headers {
+  display: flex;
+}
+[data-theme="excel"] .omok-excel-corner {
+  width: 24px;
+  min-width: 24px;
+  height: 20px;
+  background: #e2e2e2;
+  border: 1px solid #b4b4b4;
+  box-sizing: border-box;
+}
+[data-theme="excel"] .omok-excel-col-hdr {
+  width: 32px;
+  min-width: 32px;
+  height: 20px;
+  background: #f2f2f2;
+  border: 1px solid #b4b4b4;
+  border-left: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-family: 'Calibri', 'Segoe UI', sans-serif;
+  font-weight: 600;
+  color: #444;
+  user-select: none;
+}
+[data-theme="excel"] .omok-board-excel {
+  grid-template-columns: 24px repeat(19, 32px);
+  background: #ffffff;
+  border: 1px solid #b4b4b4;
+  border-top: none;
+  border-radius: 0;
+}
+[data-theme="excel"] .omok-excel-row-num {
+  width: 24px;
+  height: 32px;
+  background: #f2f2f2;
+  border-right: 1px solid #b4b4b4;
+  border-bottom: 1px solid #d0d0d0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-family: 'Calibri', 'Segoe UI', sans-serif;
+  font-weight: 600;
+  color: #444;
+  user-select: none;
+}
+[data-theme="excel"] .omok-board-excel .omok-cell {
+  background: #ffffff !important;
+  border-right: 1px solid #d0d0d0;
+  border-bottom: 1px solid #d0d0d0;
+}
+[data-theme="excel"] .omok-board-excel .omok-cell.clickable:hover {
+  background: #e8f5e9 !important;
+}
+[data-theme="excel"] .omok-board-excel .omok-cell.clickable:hover::after { display: none; }
+[data-theme="excel"] .omok-board-excel .omok-cell.xls-b {
+  background: #70ad47 !important;
+}
+[data-theme="excel"] .omok-board-excel .omok-cell.xls-w {
+  background: #ed7d31 !important;
+}
+[data-theme="excel"] .omok-board-excel .omok-cell.xls-last {
+  outline: 2px solid #ff0000;
+  outline-offset: -2px;
+  z-index: 2;
+  position: relative;
+}
+
+/* ═══════════ Excel Theme: 체스판 ═══════════ */
+[data-theme="excel"] .chess-board {
+  border: 2px solid #9e9e9e;
+  border-radius: 0;
+}
+[data-theme="excel"] .chess-cell { border: 1px solid #d0d0d0; }
+[data-theme="excel"] .chess-cell.light { background: #ffffff; }
+[data-theme="excel"] .chess-cell.dark  { background: #c6e0b4; }
+[data-theme="excel"] .chess-cell.selected  { background: #ffff00 !important; }
+[data-theme="excel"] .chess-cell.target    { background: rgba(33,115,70,0.25) !important; }
+[data-theme="excel"] .chess-cell.last-move { background: rgba(255,255,0,0.35) !important; }
+[data-theme="excel"] .chess-piece { font-family: 'Calibri', 'Segoe UI', sans-serif; }
+[data-theme="excel"] .chess-piece.white-piece { filter: none; color: #000; text-shadow: 0 0 2px #aaa; }
+[data-theme="excel"] .chess-piece.black-piece { filter: none; color: #217346; text-shadow: 0 0 1px #000; }
+[data-theme="excel"] .chess-cell.light .chess-coord-row,
+[data-theme="excel"] .chess-cell.light .chess-coord-col { color: #aaa; }
+[data-theme="excel"] .chess-cell.dark .chess-coord-row,
+[data-theme="excel"] .chess-cell.dark .chess-coord-col  { color: #217346; }
+[data-theme="excel"] .move-dot    { background: rgba(33,115,70,0.5); }
+[data-theme="excel"] .capture-ring { border-color: rgba(33,115,70,0.5); }
+
+/* ═══════════ Modal (공통) ═══════════ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.highlight-row { background: rgba(79,143,247,0.1) !important; }
+
+/* ═══════════ Responsive ═══════════ */
+@media (max-width: 600px) {
+  .omok-board { grid-template-columns: repeat(19, 20px); grid-template-rows: repeat(19, 20px); }
+  .omok-cell { width: 20px; height: 20px; }
+  .omok-stone { width: 16px; height: 16px; }
+  .chess-board { grid-template-columns: repeat(8, 40px); grid-template-rows: repeat(8, 40px); }
+  .chess-cell { width: 40px; height: 40px; }
+  .chess-piece { font-size: 26px; }
+}
